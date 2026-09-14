@@ -1,0 +1,7 @@
+# ビルド生成物
+/esa
+/dist/
+*.test
+*.out
+# エディタ/OS
+.DS_Store

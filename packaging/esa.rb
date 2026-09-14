@@ -1,9 +1,9 @@
 class Esa < Formula
   desc "esa (esa.io) を Chrome cookie 認証で参照する読み取り専用 CLI"
   homepage "https://github.com/jiikko/esa-cli"
-  url "https://github.com/jiikko/esa-cli/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "946e24efbfbdd77d04a77b85157e4853713038703e60324cc15f339c9e95336f"
-  version "0.1.0"
+  url "https://github.com/jiikko/esa-cli/archive/refs/tags/v0.1.1.tar.gz"
+  sha256 "a0bcb1a3680d9512b0dc6ec3e27da18bec997f8902b6aed4acb71d2171c46fa9"
+  version "0.1.1"
   license "MIT"
   head "https://github.com/jiikko/esa-cli.git", branch: "main"
 

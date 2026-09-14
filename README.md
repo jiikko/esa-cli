@@ -16,6 +16,16 @@ Homebrew（tap 経由・推奨）:
 brew install jiikko/tap/esa
 ```
 
+Homebrew が第三者 tap の信頼を求める場合（Homebrew 6 以降）は、先に tap を信頼する:
+
+```sh
+brew trust jiikko/tap                 # tap 全体を信頼
+# もしくは formula 単位で:  brew trust --formula jiikko/tap/esa
+brew install jiikko/tap/esa
+```
+
+インストール時に Go（build 依存）が自動で入り、ソースからビルドされる。アップデートは `brew upgrade esa`、削除は `brew uninstall esa`。
+
 go install（バイナリ名は `esa-cli` になる。`esa` で使いたければリネーム）:
 
 ```sh

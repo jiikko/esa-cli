@@ -26,10 +26,10 @@ brew install jiikko/tap/esa
 
 インストール時に Go（build 依存）が自動で入り、ソースからビルドされる。アップデートは `brew upgrade esa`、削除は `brew uninstall esa`。
 
-go install（バイナリ名は `esa-cli` になる。`esa` で使いたければリネーム）:
+go install（バイナリ名は `esa`）:
 
 ```sh
-go install github.com/jiikko/esa-cli@latest
+go install github.com/jiikko/esa-cli/cmd/esa@latest
 ```
 
 自分でビルド:
@@ -37,7 +37,7 @@ go install github.com/jiikko/esa-cli@latest
 ```sh
 git clone https://github.com/jiikko/esa-cli
 cd esa-cli
-go build -o esa .
+go build -o esa ./cmd/esa
 ```
 
 生成された `esa` を PATH の通った場所（例: `~/bin`）に置くか、フルパスで呼ぶ。

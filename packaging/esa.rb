@@ -11,7 +11,7 @@ class Esa < Formula
   depends_on :macos
 
   def install
-    system "go", "build", *std_go_args(ldflags: "-s -w"), "."
+    system "go", "build", *std_go_args(ldflags: "-s -w"), "./cmd/esa"
   end
 
   test do

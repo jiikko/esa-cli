@@ -8,7 +8,7 @@ version: 2
 
 builds:
   - id: esa
-    main: .
+    main: ./cmd/esa
     binary: esa
     env: [CGO_ENABLED=0]      # modernc.org/sqlite は pure Go なので cgo 不要
     goos: [darwin]            # Keychain/Chrome cookie 復号が macOS 前提

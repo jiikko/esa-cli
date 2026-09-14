@@ -172,12 +172,15 @@ func configShow() error {
 		}
 		return builtin, "default"
 	}
-	team, teamSrc := resolve("ESA_TEAM", fc.Team, "ubiregiinc")
+	team, teamSrc := resolve("ESA_TEAM", fc.Team, "")
 	browser, browserSrc := resolve("ESA_BROWSER", fc.Browser, "Chrome")
 	profile, profileSrc := resolve("ESA_CHROME_PROFILE", fc.Profile, "auto")
 
 	fmt.Printf("config file: %s%s\n", path, map[bool]string{true: "", false: "  (未作成)"}[exists])
 	fmt.Println("有効な設定（コマンドラインフラグ指定時はそれが最優先）:")
+	if team == "" {
+		team, teamSrc = "(未設定)", "none"
+	}
 	fmt.Printf("  %-8s %-14s (%s)\n", "team:", team, teamSrc)
 	fmt.Printf("  %-8s %-14s (%s)\n", "browser:", browser, browserSrc)
 	fmt.Printf("  %-8s %-14s (%s)\n", "profile:", profile, profileSrc)
@@ -239,7 +242,7 @@ func configInit(args []string) error {
 	}
 	fc := loadFileConfig()
 	fc.Profile = name
-	if fc.Team == "" && cfg.team != "ubiregiinc" {
+	if fc.Team == "" && cfg.team != "" {
 		fc.Team = cfg.team
 	}
 	if fc.Browser == "" && cfg.browser != "Chrome" {

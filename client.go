@@ -11,7 +11,7 @@ import (
 
 const userAgent = "esa-client (Chrome cookie session; internal doc reader)"
 
-// client は ubiregiinc.esa.io の内部エンドポイントを Cookie セッションで叩く。
+// client は <team>.esa.io の内部エンドポイントを Cookie セッションで叩く。
 type client struct {
 	http         *http.Client
 	baseURL      string // https://<team>.esa.io

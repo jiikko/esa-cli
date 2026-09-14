@@ -1,5 +1,6 @@
-// Command esa は ubiregiinc.esa.io の社内ドキュメントを Chrome のログインセッション
+// Command esa は esa.io の任意チームのドキュメントを Chrome のログインセッション
 // Cookie で参照する読み取り専用 CLI。Claude Code から esa の記事を検索・参照するために使う。
+// 対象チームは -team / ESA_TEAM / config.yml(team) で指定する（特定チームに依存しない）。
 //
 // 認証: Chrome の Cookie を Keychain 経由で復号して利用する（トークン発行不要）。
 // パスはすべて HOME 基準で解決し、カレントディレクトリに一切依存しない。
@@ -17,7 +18,7 @@ import (
 
 // config は解決済みの実行設定。
 type config struct {
-	team    string // チーム名（サブドメイン）例: ubiregiinc
+	team    string // チーム名（サブドメイン）例: myteam（https://myteam.esa.io の myteam 部分）
 	browser string // Chrome / Brave / ...
 	profile string // Default / Profile 1 / ...
 	asJSON  bool
@@ -36,7 +37,7 @@ func envOr(key, def string) string {
 // 既定値は「環境変数 > config.yml > 組み込み既定」で解決し、-flag 明示指定が最優先になる。
 func registerCommon(fs *flag.FlagSet, cfg *config) {
 	fc := loadFileConfig()
-	fs.StringVar(&cfg.team, "team", resolveDefault("ESA_TEAM", fc.Team, "ubiregiinc"), "esa チーム名（サブドメイン）。既定 ubiregiinc / ESA_TEAM / config.yml team")
+	fs.StringVar(&cfg.team, "team", resolveDefault("ESA_TEAM", fc.Team, ""), "esa チーム名（サブドメイン。必須）https://<team>.esa.io の <team> / ESA_TEAM / config.yml team")
 	fs.StringVar(&cfg.browser, "browser", resolveDefault("ESA_BROWSER", fc.Browser, "Chrome"), "Cookie を読むブラウザ（Chrome/Brave/Chromium/Edge/Vivaldi）/ ESA_BROWSER / config.yml browser")
 	fs.StringVar(&cfg.profile, "profile", resolveDefault("ESA_CHROME_PROFILE", fc.Profile, "auto"), "ブラウザのプロファイル名。既定 auto（自動検出）/ ESA_CHROME_PROFILE / config.yml profile")
 	fs.BoolVar(&cfg.asJSON, "json", false, "機械可読な JSON で出力する")
@@ -50,7 +51,7 @@ func newFlagSet(name, help string) *flag.FlagSet {
 }
 
 // topUsage は `esa` / `esa --help` の出力（サブコマンド一覧 + 1 行概要 + 共通事項）。
-const topUsage = `esa - ubiregiinc.esa.io（社内 esa）ドキュメント参照 CLI（読み取り専用 / Chrome cookie 認証）
+const topUsage = `esa - <team>.esa.io（社内 esa）ドキュメント参照 CLI（読み取り専用 / Chrome cookie 認証）
 
 概要:
   社内 esa の記事を検索して本文を読むためのコマンド。ネット上に無い社内情報（手順書・規程・
@@ -69,7 +70,7 @@ const topUsage = `esa - ubiregiinc.esa.io（社内 esa）ドキュメント参�
 各サブコマンドの詳細:  esa <サブコマンド> --help   （例: esa search --help）
 
 共通オプション（全サブコマンド）:
-  -team <name>     チーム名（サブドメイン）。既定 ubiregiinc（環境変数 ESA_TEAM）
+  -team <name>     チーム名（サブドメイン）。必須。https://<team>.esa.io の <team>（ESA_TEAM / config でも可）
   -browser <name>  Cookie を読むブラウザ Chrome/Brave/Chromium/Edge/Vivaldi。既定 Chrome（ESA_BROWSER）
   -profile <name>  プロファイル。既定 auto=ログイン済みを自動検出（ESA_CHROME_PROFILE）
   -json            JSON で出力（search / meta / revisions。show は常に Markdown）
@@ -80,13 +81,13 @@ const topUsage = `esa - ubiregiinc.esa.io（社内 esa）ドキュメント参�
 
 引数:
   <番号> は記事 URL 末尾の数値。URL をそのまま渡してもよい
-  （例: esa show https://ubiregiinc.esa.io/posts/28025）
+  （例: esa show https://<team>.esa.io/posts/28025）
 
 終了コード: 0=成功 / 1=実行時エラー(認証切れ・404・ネットワーク等) / 2=使い方の誤り
   エラーは stderr に「エラー: ...」で出力。
 
 認証:
-  対象 Chrome で https://ubiregiinc.esa.io にログインしている必要がある。セッション切れだと
+  対象 Chrome で https://<team>.esa.io にログインしている必要がある。セッション切れだと
   内部エンドポイントは全パス 404 になる（非公開チームの挙動）→ Chrome で入り直す。
   初回は macOS の Keychain 許可ダイアログで「常に許可」を選ぶ。
 `
@@ -98,7 +99,7 @@ const searchHelp = `esa search - 記事を検索する（結果は TSV。表示�
   esa search [オプション] <クエリ...>
 
   クエリは複数語をそのまま並べてよい（内部でスペース連結）。
-  例: esa search in:ISMS事務局 パスワード
+  例: esa search in:設計 パスワード
 
 オプション:
   -c, -columns <list>  表示カラム（カンマ区切り）。既定: number,created,updated,author,name
@@ -111,7 +112,7 @@ const searchHelp = `esa search - 記事を検索する（結果は TSV。表示�
 
 指定可能なカラム（-c / -columns）:
   number      記事番号
-  name        カテゴリ/タイトル（full_name 例: ISMS事務局/ガイドライン/xxx）
+  name        カテゴリ/タイトル（full_name 例: カテゴリ/サブカテゴリ/タイトル）
   title       タイトルのみ
   category    カテゴリ
   url         URL
@@ -124,8 +125,8 @@ const searchHelp = `esa search - 記事を検索する（結果は TSV。表示�
     速度優先なら -fast。ESA_TOKEN 設定時は公式 API が 1 リクエストで全カラムを高速取得。
 
 検索クエリ q の構文（esa の Web 検索と同一）:
-  キーワード      情報セキュリティ            タイトル/カテゴリ/本文をあいまい検索
-  "フレーズ"      "情報セキュリティ 基本方針"  フレーズ完全一致
+  キーワード      仕様書            タイトル/カテゴリ/本文をあいまい検索
+  "フレーズ"      "完全一致 フレーズ"  フレーズ完全一致
   a b             Slack Teams                 AND（スペース区切り）
   a OR b          Slack OR Teams              OR
   -語             -退職                       除外(NOT)
@@ -144,11 +145,11 @@ const searchHelp = `esa search - 記事を検索する（結果は TSV。表示�
   created_at:str(ISO), updated_at:str(ISO), created_by:str, updated_by:str, wip:bool, tags:[str]
 
 例:
-  esa search 'in:ISMS事務局 updated:>2026-01-01'
-  esa search -c number,updated,author,name 'BYOD'
+  esa search 'in:設計 updated:>2026-01-01'
+  esa search -c number,updated,author,name 'キーワード'
   esa search -c number,created,updated,created_by,updated_by,url 'title:ガイドライン'
-  esa search -no-header -c number,url 'BYOD' | awk -F'\t' '{print $2}'
-  esa search -json 'in:ISMS事務局' | jq -r '.[].number'
+  esa search -no-header -c number,url 'キーワード' | awk -F'\t' '{print $2}'
+  esa search -json 'in:設計' | jq -r '.[].number'
 `
 
 // showHelp は `esa show --help` の詳細。
@@ -164,7 +165,7 @@ const showHelp = `esa show - 記事本文を Markdown で出力する
 
 例:
   esa show 28025
-  esa show https://ubiregiinc.esa.io/posts/28025
+  esa show https://<team>.esa.io/posts/28025
   esa show 28025 | sed -n '1,120p'     # 長い記事は範囲を絞る
   esa show 28025 | glow -              # 色付きで読む
 `
@@ -252,6 +253,17 @@ type usageError struct{ msg string }
 
 func (e *usageError) Error() string { return e.msg }
 
+// requireTeam は team が未設定なら使い方エラーを返す（特定チームに依存させないため既定を持たない）。
+func (c config) requireTeam() error {
+	if strings.TrimSpace(c.team) == "" {
+		return &usageError{"エラー: チーム名(team)が未設定です。esa の https://<team>.esa.io の <team> を指定してください:\n" +
+			"  esa config set team <team>   （推奨: 一度設定すれば以後不要）\n" +
+			"  export ESA_TEAM=<team>\n" +
+			"  esa <コマンド> -team <team> ..."}
+	}
+	return nil
+}
+
 // buildCookieClient は実効プロファイルを解決してクライアントを構築する（auto なら自動検出）。
 func buildCookieClient(cfg config) (*client, error) {
 	return resolveProfile(cfg)
@@ -275,7 +287,7 @@ func cmdSearch(args []string) error {
 
 	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if query == "" {
-		return &usageError{"エラー: 検索クエリを指定してください。\n使い方: esa search [オプション] <クエリ...>\n例:     esa search 'in:ISMS事務局 パスワード'\n詳細:   esa search --help"}
+		return &usageError{"エラー: 検索クエリを指定してください。\n使い方: esa search [オプション] <クエリ...>\n例:     esa search 'in:設計 キーワード'\n詳細:   esa search --help"}
 	}
 	if perPage > 100 {
 		perPage = 100
@@ -283,6 +295,10 @@ func cmdSearch(args []string) error {
 
 	cols, err := parseColumns(columnsSpec)
 	if err != nil {
+		return err
+	}
+
+	if err := cfg.requireTeam(); err != nil {
 		return err
 	}
 

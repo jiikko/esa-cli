@@ -42,6 +42,9 @@ func resolveProfile(cfg config) (*client, error) {
 // resolveProfileClient は実効プロファイル名とクライアントの両方を返す。
 // config init など「どのプロファイルが使われるか」を知りたい箇所で使う。
 func resolveProfileClient(cfg config) (string, *client, error) {
+	if err := cfg.requireTeam(); err != nil {
+		return "", nil, err
+	}
 	if cfg.profile != "" && cfg.profile != profileAuto {
 		c, err := buildClientForProfile(cfg, cfg.profile)
 		return cfg.profile, c, err

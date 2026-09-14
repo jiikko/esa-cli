@@ -1,6 +1,6 @@
 # esa-client
 
-`ubiregiinc.esa.io`（社内 esa）のドキュメントを **Chrome のログインセッション Cookie** で参照する読み取り専用 CLI。
+esa (esa.io) の任意チームのドキュメントを **Chrome のログインセッション Cookie** で参照する読み取り専用 CLI。
 Claude Code から esa の記事を検索・参照するために使う。トークン発行は不要。
 
 - 認証: Chrome の Cookie を macOS Keychain 経由で復号して利用する（内部エンドポイント方式。API doc §8 相当）
@@ -35,11 +35,23 @@ pure Go（`modernc.org/sqlite`）なので `CGO_ENABLED=0` でビルド可。mac
 
 ## 前提（認証）
 
-- 対象の Chrome で `https://ubiregiinc.esa.io` に**ログイン済み**であること
+- 対象の Chrome で `https://<team>.esa.io` に**ログイン済み**であること
 - 初回実行時、macOS が Keychain アクセスの許可を求める → **「常に許可」** を選ぶ
 - `~/Library/Application Support/Google/Chrome/` の読み取りに **フルディスクアクセス**が必要な場合がある
   （システム設定 → プライバシーとセキュリティ → フルディスクアクセス に、実行元のターミナル/アプリを追加）
 - セッションが切れると内部エンドポイントは全パスで 404 を返す（非公開チームの挙動）。その場合は Chrome でログインし直す。
+
+## 初回セットアップ（team を設定）
+
+対象チームは特定サービスに依存しないため、最初に自分のチーム名を設定する（`https://<team>.esa.io` の `<team>` 部分）。
+
+```sh
+esa config set team myteam     # 一度設定すれば以後不要（~/.config/esa-cli/config.yml に保存）
+# もしくは環境変数: export ESA_TEAM=myteam
+# もしくは都度: esa search -team myteam '<クエリ>'
+```
+
+未設定のまま実行すると、設定方法を案内して終了する（終了コード 2）。
 
 ## コマンド
 
@@ -53,20 +65,20 @@ esa help                 ヘルプ
 ```
 
 - ヘルプは 2 段構え: `esa --help` でサブコマンド一覧、`esa <サブコマンド> --help` で各コマンドの詳細。
-- `<番号>` は記事 URL 末尾の数値。`esa show https://ubiregiinc.esa.io/posts/28025` のように URL でも可。
+- `<番号>` は記事 URL 末尾の数値。`esa show https://<team>.esa.io/posts/28025` のように URL でも可。
 - 終了コード: `0`=成功 / `1`=実行時エラー（認証切れ・404・ネットワーク等）/ `2`=使い方の誤り。
   引数不足時は「使い方 + `--help` への案内」を stderr に出して `2` で終わる。
 
 ### 例
 
 ```sh
-esa search 'in:ISMS事務局 updated:>2026-01-01'
+esa search 'in:設計 updated:>2026-01-01'
 esa search 'title:ガイドライン wip:false'
 esa show 28025
 esa show 28025 | sed -n '1,120p'   # 長い記事は範囲を絞る
 esa show 28025 | glow -            # Markdown を色付きで読む
 esa meta 28025 -comments
-esa search -json 'BYOD'            # JSON で受け取る（Claude Code / スクリプト向け）
+esa search -json 'キーワード'            # JSON で受け取る（Claude Code / スクリプト向け）
 ```
 
 検索クエリ `q` の構文は esa の Web 検索と同じ（`in:` `title:` `body:` `#tag` `@user` `updated:>YYYY-MM` `sort:` など）。
@@ -77,11 +89,11 @@ esa search -json 'BYOD'            # JSON で受け取る（Claude Code / スク
 `search` の出力はタブ区切りで、先頭にヘッダ行が付く。表示するカラムは `-c` / `-columns` で変更できる。
 
 ```sh
-esa search 'in:ISMS事務局'                                   # 既定: number,created,updated,author,name
-esa search -c number,updated,author,name 'BYOD'
+esa search 'in:設計'                                   # 既定: number,created,updated,author,name
+esa search -c number,updated,author,name 'キーワード'
 esa search -c number,created,updated,created_by,updated_by,url 'title:ガイドライン'
-esa search -no-header -c number,url 'BYOD' | awk -F'\t' '{print $2}'   # スクリプト向け
-esa search -json 'in:ISMS事務局' | jq -r '.[].number'                  # JSON で受け取る
+esa search -no-header -c number,url 'キーワード' | awk -F'\t' '{print $2}'   # スクリプト向け
+esa search -json 'in:設計' | jq -r '.[].number'                  # JSON で受け取る
 ```
 
 指定可能なカラム:
@@ -109,7 +121,7 @@ esa search -json 'in:ISMS事務局' | jq -r '.[].number'                  # JSON
 
 | フラグ | 環境変数 | 既定 | 説明 |
 |---|---|---|---|
-| `-team <name>` | `ESA_TEAM` | `ubiregiinc` | チーム名（サブドメイン） |
+| `-team <name>` | `ESA_TEAM` | （必須） | チーム名。`https://<team>.esa.io` の `<team>` |
 | `-browser <name>` | `ESA_BROWSER` | `Chrome` | Cookie を読むブラウザ（Chrome/Brave/Chromium/Edge/Vivaldi） |
 | `-profile <name>` | `ESA_CHROME_PROFILE` | `auto` | ブラウザのプロファイル。`auto` はログイン済みを自動検出 |
 | `-json` | — | off | JSON で出力（search / meta / revisions。show は常に Markdown） |
@@ -142,8 +154,8 @@ esa config get profile              # 保存値を表示
 config.yml の例:
 
 ```yaml
-profile: Profile 3
-# team: ubiregiinc
+team: myteam        # https://myteam.esa.io の myteam 部分
+profile: Profile 3  # 使用する Chrome プロファイル（省略時は auto で自動検出）
 # browser: Chrome
 ```
 

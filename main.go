@@ -65,6 +65,7 @@ const topUsage = `esa - <team>.esa.io（社内 esa）ドキュメント参照 CL
   meta        記事のメタ情報を出力（-comments でコメントも）
   revisions   リビジョン一覧を出力
   config      設定ファイル(config.yml)の表示・編集（使用プロファイル等を保存）
+  setup       対話式セットアップ（team/プロファイル等を保存）
   help        このヘルプ
 
 各サブコマンドの詳細:  esa <サブコマンド> --help   （例: esa search --help）
@@ -228,6 +229,8 @@ func main() {
 		err = cmdRevisions(args)
 	case "config":
 		err = cmdConfig(args)
+	case "setup":
+		err = cmdSetup(args)
 	case "help", "-h", "--help":
 		fmt.Fprint(os.Stdout, topUsage)
 		return

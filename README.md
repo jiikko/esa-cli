@@ -45,6 +45,15 @@ pure Go（`modernc.org/sqlite`）なので `CGO_ENABLED=0` でビルド可。mac
 
 対象チームは特定サービスに依存しないため、最初に自分のチーム名を設定する（`https://<team>.esa.io` の `<team>` 部分）。
 
+おすすめは対話式ウィザード（team・ブラウザ・使用プロファイルをまとめて設定。候補プロファイルの
+ログイン中メールと「認証が通るか」を見ながら選べる）:
+
+```sh
+esa setup
+```
+
+個別に設定してもよい:
+
 ```sh
 esa config set team myteam     # 一度設定すれば以後不要（~/.config/esa-cli/config.yml に保存）
 # もしくは環境変数: export ESA_TEAM=myteam
@@ -61,6 +70,7 @@ esa show   <番号|URL>    記事本文を Markdown（YAML front matter 付き�
 esa meta   <番号|URL>    記事のメタ情報を出力（-comments でコメントも）
 esa revisions <番号|URL> リビジョン一覧（番号 / 更新日時 / 更新者）
 esa config               設定ファイル(config.yml)の表示・編集
+esa setup                対話式セットアップ（team/プロファイル等をまとめて設定）
 esa help                 ヘルプ
 ```
 

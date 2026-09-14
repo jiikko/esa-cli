@@ -198,3 +198,55 @@ func writeProfileCache(browser, team, profile string) {
 	}
 	_ = os.WriteFile(p, []byte(profile+"\n"), 0o600)
 }
+
+// profileInfo はプロファイルのディレクトリ名とログイン中アカウント情報。
+type profileInfo struct {
+	dir   string
+	name  string // 表示名（Local State の name）
+	email string // ログイン中 Google アカウント（user_name。esa ログインとは限らない点に注意）
+}
+
+// listProfileInfos は Local State からプロファイルとメール/表示名を取得する。
+// 読めない場合はディレクトリ名のみ（メール空）で返す。
+func listProfileInfos(bp browserProfile) []profileInfo {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	lsPath := filepath.Join(home, "Library", "Application Support", bp.supportSubdir, "Local State")
+	data, err := os.ReadFile(lsPath)
+	if err != nil {
+		// フォールバック: ディレクトリ名のみ
+		var out []profileInfo
+		for _, d := range fallbackProfiles(home, bp) {
+			out = append(out, profileInfo{dir: d})
+		}
+		return out
+	}
+	var ls struct {
+		Profile struct {
+			InfoCache map[string]struct {
+				Name     string `json:"name"`
+				UserName string `json:"user_name"`
+				GaiaName string `json:"gaia_name"`
+			} `json:"info_cache"`
+		} `json:"profile"`
+	}
+	if err := json.Unmarshal(data, &ls); err != nil || len(ls.Profile.InfoCache) == 0 {
+		var out []profileInfo
+		for _, d := range fallbackProfiles(home, bp) {
+			out = append(out, profileInfo{dir: d})
+		}
+		return out
+	}
+	out := make([]profileInfo, 0, len(ls.Profile.InfoCache))
+	for dir, info := range ls.Profile.InfoCache {
+		email := info.UserName
+		if email == "" {
+			email = info.GaiaName
+		}
+		out = append(out, profileInfo{dir: dir, name: info.Name, email: email})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].dir < out[j].dir })
+	return out
+}

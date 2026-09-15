@@ -1,9 +1,9 @@
-# esa-client
+# esa
 
 esa (esa.io) の任意チームのドキュメントを **Chrome のログインセッション Cookie** で参照する読み取り専用 CLI。
 Claude Code から esa の記事を検索・参照するために使う。トークン発行は不要。
 
-- 認証: Chrome の Cookie を macOS Keychain 経由で復号して利用する（内部エンドポイント方式。API doc §8 相当）
+- **macOS 専用**。Chrome の Cookie を macOS Keychain 経由で復号し、esa の Web UI が使う内部エンドポイントを叩く（トークン不要）
 - **ログイン済みのプロファイルを自動検出**する（`-profile auto` が既定）。どの Chrome プロファイルで esa にログインしていても動く
 - パスはすべて HOME 基準で解決し、**カレントディレクトリに一切依存しない**（ディレクトリを移動しても動作する）
 - 読み取り専用（更新系は実装しない）
@@ -189,12 +189,14 @@ profile: Profile 3  # 使用する Chrome プロファイル（省略時は auto
   `show` / `meta` / `revisions` は常に Cookie を使う（`.md` 取得は内部エンドポイントの利点）。
 - 取得内容は社内情報。外部サービスへの貼り付け・保存に注意。
 
-## Claude Code から使うときの定型
+## スクリプト・自動化から使う
+
+典型的な流れは「検索して番号を得る → 本文を読む」で、AI エージェントやシェルスクリプトからも同じ:
 
 ```sh
 esa search 'キーワード'   # まず絞り込む → 番号を得る（必要な列だけ -c で）
 esa show <番号>           # 本文を Markdown で読む
 ```
 
-- パースするなら `-json`、TSV で十分なら `-no-header`。
+- 出力をパースするなら `-json`、TSV で十分なら `-no-header`。
 - 全体像は `esa --help`、各コマンドの詳細は `esa <サブコマンド> --help`。

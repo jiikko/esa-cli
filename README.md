@@ -32,6 +32,13 @@ go install（バイナリ名は `esa`）:
 go install github.com/jiikko/esa-cli/cmd/esa@latest
 ```
 
+バイナリは `$(go env GOBIN)`（未設定なら `$(go env GOPATH)/bin`）に置かれる。ここが PATH に無いと
+`esa` が見つからないので、PATH に追加するか、PATH 上のディレクトリを `GOBIN` に指定する:
+
+```sh
+GOBIN="$HOME/go/bin" go install github.com/jiikko/esa-cli/cmd/esa@latest
+```
+
 自分でビルド:
 
 ```sh

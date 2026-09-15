@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"os"
 	"strconv"
 	"strings"
@@ -477,6 +478,10 @@ func printMetaField(m map[string]any, key string) {
 	v, ok := m[key]
 	if !ok || v == nil {
 		return
+	}
+	// esa は name/full_name 内の "/" を &#47;、"#" を &#35; にエスケープして返すため復元する。
+	if sv, ok := v.(string); ok {
+		v = html.UnescapeString(sv)
 	}
 	fmt.Printf("%-14s %v\n", key+":", v)
 }

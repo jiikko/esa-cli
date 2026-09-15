@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	stdhtml "html"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -99,7 +100,8 @@ func searchViaAPI(teamName, query string, perPage, page int, token string) ([]se
 	for _, p := range out.Posts {
 		wip := p.Wip
 		results = append(results, searchResult{
-			Number: p.Number, Title: p.Name, FullName: p.FullName, Category: p.Category, URL: p.URL,
+			Number: p.Number, Title: stdhtml.UnescapeString(p.Name),
+			FullName: stdhtml.UnescapeString(p.FullName), Category: stdhtml.UnescapeString(p.Category), URL: p.URL,
 			CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 			CreatedBy: p.CreatedBy.ScreenName, UpdatedBy: p.UpdatedBy.ScreenName,
 			Wip: &wip, Tags: p.Tags,
@@ -156,7 +158,7 @@ func parseSearchHTML(body []byte, baseURL string) ([]searchResult, error) {
 				num, _ := strconv.Atoi(m[1])
 				if !seen[num] {
 					seen[num] = true
-					title := strings.TrimSpace(spanText(n, "post-title__name"))
+					title := stdhtml.UnescapeString(strings.TrimSpace(spanText(n, "post-title__name")))
 					results = append(results, searchResult{
 						Number:   num,
 						Title:    title,
@@ -202,14 +204,15 @@ func (c *client) enrichResults(results []searchResult, concurrency int) {
 
 // applyPostJSON は /posts/N.json のフィールドを searchResult に反映する。
 func applyPostJSON(r *searchResult, post map[string]any) {
+	// esa は name/full_name 内の "/" を &#47;、"#" を &#35; にエスケープして返すため復元する。
 	if v, ok := post["full_name"].(string); ok && v != "" {
-		r.FullName = v
+		r.FullName = stdhtml.UnescapeString(v)
 	}
 	if v, ok := post["name"].(string); ok && v != "" {
-		r.Title = v
+		r.Title = stdhtml.UnescapeString(v)
 	}
 	if v, ok := post["category"].(string); ok {
-		r.Category = v
+		r.Category = stdhtml.UnescapeString(v)
 	}
 	if v, ok := post["created_at"].(string); ok {
 		r.CreatedAt = v

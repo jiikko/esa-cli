@@ -23,9 +23,9 @@ func dateOnly(iso string) string {
 // columnRegistry は指定可能なカラム。エイリアスも含む。
 var columnRegistry = map[string]colDef{
 	"number":     {"番号", false, func(r *searchResult) string { return strconv.Itoa(r.Number) }},
-	"name":       {"カテゴリ/タイトル", false, func(r *searchResult) string { return r.FullName }},
-	"full_name":  {"カテゴリ/タイトル", false, func(r *searchResult) string { return r.FullName }},
-	"title":      {"タイトル", true, func(r *searchResult) string { return r.Title }},
+	"name":       {"カテゴリ/タイトル", true, func(r *searchResult) string { return r.FullName }},
+	"full_name":  {"カテゴリ/タイトル", true, func(r *searchResult) string { return r.FullName }},
+	"title":      {"タイトル", false, func(r *searchResult) string { return r.Title }},
 	"category":   {"カテゴリ", true, func(r *searchResult) string { return r.Category }},
 	"url":        {"URL", false, func(r *searchResult) string { return r.URL }},
 	"created":    {"作成日", true, func(r *searchResult) string { return dateOnly(r.CreatedAt) }},

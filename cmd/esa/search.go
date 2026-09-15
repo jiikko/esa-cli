@@ -244,13 +244,31 @@ func applyPostJSON(r *searchResult, post map[string]any) {
 
 // isEmptyResultPage は「検索したが 0 件」を示すマーカーを検出する。
 func isEmptyResultPage(body []byte) bool {
-	s := strings.ToLower(string(body[:min(len(body), 32768)]))
-	markers := []string{
-		"見つかりませんでした", "該当する記事", "no posts",
-		"results-empty", "posts-empty", "に一致する記事はありません",
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return false
 	}
-	for _, m := range markers {
-		if strings.Contains(s, strings.ToLower(m)) {
+	return hasClassPrefix(doc, "search__no-result")
+}
+
+// hasClassPrefix は class 属性が prefix で始まる要素が在るかを返す。
+//
+// 🚨 文字列の先頭 N バイトを見る形にしないこと。実測 2026-09-16: 0 件ページの
+// マーカーは 51,741 バイト目に在り、以前の実装（先頭 32,768 バイトを検索）の窓の
+// 外だった。そのため**本当に 0 件のときに「抽出できませんでした」**と報告していた。
+// ページの長さは記事数・サイドバー・チーム設定で変わるので、窓では判定できない。
+//
+// class は "search__no-result-message" のような派生もあるので前方一致で見る。
+func hasClassPrefix(n *html.Node, prefix string) bool {
+	if n.Type == html.ElementNode {
+		for _, cls := range strings.Fields(attr(n, "class")) {
+			if strings.HasPrefix(cls, prefix) {
+				return true
+			}
+		}
+	}
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		if hasClassPrefix(ch, prefix) {
 			return true
 		}
 	}

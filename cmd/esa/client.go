@@ -11,6 +11,39 @@ import (
 
 const userAgent = "esa-client (Chrome cookie session; internal doc reader)"
 
+// newHTTPClient は資格情報を持ち越さないリダイレクト方針を持つクライアントを作る。
+//
+// 🚨 Go の既定はリダイレクトを追い、そのとき資格情報が持ち越される:
+//   - Cookie / Authorization は**別ドメインへは剥がれる**が、
+//     **https→http のダウングレードでは剥がれない**（stdlib はホスト名しか比較せず
+//     scheme を見ない）。セッションや API トークンが平文で線に乗る
+//
+// esa は GET で記事を読むだけなので、同一ホスト内の https リダイレクトは追ってよい。
+// scheme のダウングレードとホストの変更だけを止める。
+func newHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) == 0 {
+				return nil
+			}
+			orig := via[0].URL
+			if req.URL.Scheme != orig.Scheme {
+				return fmt.Errorf("リダイレクト先の scheme が変わりました（%s → %s）。資格情報を送らずに中止します",
+					orig.Scheme, req.URL.Scheme)
+			}
+			if req.URL.Host != orig.Host {
+				return fmt.Errorf("リダイレクト先のホストが変わりました（%s → %s）。資格情報を送らずに中止します",
+					orig.Host, req.URL.Host)
+			}
+			if len(via) >= 5 {
+				return fmt.Errorf("リダイレクトが多すぎます（%d 回）", len(via))
+			}
+			return nil
+		},
+	}
+}
+
 // client は <team>.esa.io の内部エンドポイントを Cookie セッションで叩く。
 type client struct {
 	http         *http.Client
@@ -20,7 +53,7 @@ type client struct {
 
 func newClient(teamHost, cookieHeader string) *client {
 	return &client{
-		http:         &http.Client{Timeout: 30 * time.Second},
+		http:         newHTTPClient(),
 		baseURL:      "https://" + teamHost,
 		cookieHeader: cookieHeader,
 	}

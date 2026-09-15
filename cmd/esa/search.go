@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"golang.org/x/net/html"
 )
@@ -62,7 +61,7 @@ func searchViaAPI(teamName, query string, perPage, page int, token string) ([]se
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("User-Agent", userAgent)
 
-	hc := &http.Client{Timeout: 30 * time.Second}
+	hc := newHTTPClient() // 資格情報を持ち越さないリダイレクト方針（client.go）
 	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("公式 API リクエスト失敗: %w", err)

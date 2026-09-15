@@ -40,7 +40,14 @@ func configFilePath() (string, error) {
 var (
 	fileConfigOnce   sync.Once
 	fileConfigCached fileConfig
+	fileConfigErr    error // 解析に失敗したときの理由（config set はこれを見て書き込みを拒む）
 )
+
+// fileConfigProblem は config.yml の解析に失敗していればその理由を返す。
+func fileConfigProblem() error {
+	loadFileConfig()
+	return fileConfigErr
+}
 
 // loadFileConfig は config.yml を読む（無ければゼロ値）。プロセス内で 1 回だけ読む。
 func loadFileConfig() fileConfig {
@@ -55,7 +62,8 @@ func loadFileConfig() fileConfig {
 		}
 		var fc fileConfig
 		if err := yaml.Unmarshal(data, &fc); err != nil {
-			fmt.Fprintf(os.Stderr, "警告: %s の解析に失敗しました（無視します）: %v\n", path, err)
+			fileConfigErr = fmt.Errorf("%s の解析に失敗しました: %w", path, err)
+			fmt.Fprintf(os.Stderr, "警告: %v\n", fileConfigErr)
 			return
 		}
 		fileConfigCached = fc
@@ -140,6 +148,15 @@ func cmdConfig(args []string) error {
 		}
 		return configGet(args[1])
 	case "set":
+		// 🚨 読めなかったファイルを「読めたこと」にして上書きしない。
+		// 以前は解析に失敗しても警告だけ出してゼロ値から書き直しており、
+		// 他の設定（team / browser 等）が黙って消えた。
+		if err := fileConfigProblem(); err != nil {
+			path, _ := configFilePath()
+			return &usageError{fmt.Sprintf(
+				"エラー: 設定ファイルを読めないため書き込みを中止しました。\n  %v\n"+
+					"  ファイルを直すか削除してから、もう一度実行してください: %s", err, path)}
+		}
 		if len(args) < 3 {
 			return &usageError{"エラー: キーと値を指定してください。\n使い方: esa config set <profile|team|browser> <値>\n例:     esa config set profile \"Profile 3\""}
 		}

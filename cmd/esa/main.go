@@ -44,10 +44,26 @@ func registerCommon(fs *flag.FlagSet, cfg *config) {
 	fs.BoolVar(&cfg.asJSON, "json", false, "機械可読な JSON で出力する")
 }
 
+// parseArgs は Parse の結果を 3 つに分ける。
+//
+//   - --help: 明示的な要求なので **stdout** へ出して正常終了する（パイプで読める）
+//   - フラグの誤り: usage は stderr（stdout に混ざるとパイプが壊れる）。rc=2
+//   - 正常: そのまま続行
+func parseArgs(fs *flag.FlagSet, help string, args []string) (helpRequested bool, err error) {
+	if e := fs.Parse(args); e != nil {
+		if errors.Is(e, flag.ErrHelp) {
+			fmt.Fprint(os.Stdout, help)
+			return true, nil
+		}
+		return false, &usageError{"エラー: " + e.Error()}
+	}
+	return false, nil
+}
+
 // newFlagSet は共通の Usage（サブコマンド詳細 help）を設定した FlagSet を作る。
 func newFlagSet(name, help string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
-	fs.Usage = func() { fmt.Fprint(os.Stdout, help) }
+	fs.Usage = func() { fmt.Fprint(os.Stderr, help) }
 	return fs
 }
 
@@ -244,14 +260,14 @@ func main() {
 	}
 
 	if err != nil {
-		var ue *usageError
-		if errors.As(err, &ue) {
-			// 使い方の誤り: メッセージをそのまま出して終了コード 2。
-			fmt.Fprintln(os.Stderr, ue.Error())
-			os.Exit(2)
+		code := exitCodeFor(err)
+		if code == 2 {
+			// 使い方の誤り: メッセージをそのまま出す。
+			fmt.Fprintln(os.Stderr, err.Error())
+		} else {
+			fmt.Fprintln(os.Stderr, "エラー: "+err.Error())
 		}
-		fmt.Fprintln(os.Stderr, "エラー: "+err.Error())
-		os.Exit(1)
+		os.Exit(code)
 	}
 }
 
@@ -259,6 +275,47 @@ func main() {
 type usageError struct{ msg string }
 
 func (e *usageError) Error() string { return e.msg }
+
+// checkNoTrailingFlags は「クエリの後ろに置かれたフラグ」を検出する。
+//
+// `esa search 'キーワード' -c number` と書くと flag パッケージはそこで解析を止め、
+// -c number が検索クエリの一部になる。esa 側では単に 0 件として返るため、
+// 原因がフラグの位置だと分からない。検索クエリが `-` で始まる正当な形は
+// 除外 (`-語`) だが、その場合もスペース無しで続くので `-c` のような単独の語とは区別できる。
+// ここでは「フラグとして定義されている名前と一致する語」だけを弾く（誤検出を避ける）。
+func checkNoTrailingFlags(fs *flag.FlagSet, args []string) error {
+	defined := map[string]bool{}
+	fs.VisitAll(func(f *flag.Flag) { defined[f.Name] = true })
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			continue
+		}
+		name := strings.TrimLeft(a, "-")
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		if defined[name] {
+			return &usageError{fmt.Sprintf(
+				"エラー: %q はフラグとして解釈されませんでした（検索クエリの一部になっています）。\n"+
+					"  フラグはクエリより前に置いてください。\n"+
+					"  正: esa search %s <値> '<クエリ>'\n"+
+					"  誤: esa search '<クエリ>' %s <値>", a, a, a)}
+		}
+	}
+	return nil
+}
+
+// exitCodeFor はエラーから終了コードを決める（使い方の誤り=2 / 実行時=1）。
+func exitCodeFor(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ue *usageError
+	if errors.As(err, &ue) {
+		return 2
+	}
+	return 1
+}
 
 // requireTeam は team が未設定なら使い方エラーを返す（特定チームに依存させないため既定を持たない）。
 func (c config) requireTeam() error {
@@ -281,8 +338,9 @@ func cmdSearch(args []string) error {
 	var perPage, page int
 	var columnsSpec string
 	var fast, noHeader bool
-	fs := flag.NewFlagSet("search", flag.ExitOnError)
-	fs.Usage = func() { fmt.Fprint(os.Stdout, searchHelp) }
+	fs := flag.NewFlagSet("search", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { fmt.Fprint(os.Stderr, searchHelp) }
 	registerCommon(fs, &cfg)
 	fs.IntVar(&perPage, "n", 50, "取得件数（公式 API 使用時の per_page。最大 100）")
 	fs.IntVar(&page, "page", 1, "ページ番号")
@@ -290,7 +348,12 @@ func cmdSearch(args []string) error {
 	fs.StringVar(&columnsSpec, "c", defaultColumns, "-columns の別名")
 	fs.BoolVar(&fast, "fast", false, "詳細取得(各記事JSON)を省略して高速化（number/title/url のみ確実）")
 	fs.BoolVar(&noHeader, "no-header", false, "ヘッダ行を出力しない")
-	fs.Parse(args)
+	if done, err := parseArgs(fs, searchHelp, args); err != nil || done {
+		return err
+	}
+	if err := checkNoTrailingFlags(fs, fs.Args()); err != nil {
+		return err
+	}
 
 	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if query == "" {
@@ -341,10 +404,13 @@ func cmdSearch(args []string) error {
 
 func cmdShow(args []string) error {
 	var cfg config
-	fs := flag.NewFlagSet("show", flag.ExitOnError)
-	fs.Usage = func() { fmt.Fprint(os.Stdout, showHelp) }
+	fs := flag.NewFlagSet("show", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { fmt.Fprint(os.Stderr, showHelp) }
 	registerCommon(fs, &cfg)
-	fs.Parse(args)
+	if done, err := parseArgs(fs, showHelp, args); err != nil || done {
+		return err
+	}
 
 	number, err := parseNumberArg(fs.Args(), "show")
 	if err != nil {
@@ -368,11 +434,14 @@ func cmdShow(args []string) error {
 func cmdMeta(args []string) error {
 	var cfg config
 	var withComments bool
-	fs := flag.NewFlagSet("meta", flag.ExitOnError)
-	fs.Usage = func() { fmt.Fprint(os.Stdout, metaHelp) }
+	fs := flag.NewFlagSet("meta", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { fmt.Fprint(os.Stderr, metaHelp) }
 	registerCommon(fs, &cfg)
 	fs.BoolVar(&withComments, "comments", false, "コメントも取得する")
-	fs.Parse(args)
+	if done, err := parseArgs(fs, metaHelp, args); err != nil || done {
+		return err
+	}
 
 	number, err := parseNumberArg(fs.Args(), "meta")
 	if err != nil {
@@ -422,10 +491,13 @@ func cmdMeta(args []string) error {
 
 func cmdRevisions(args []string) error {
 	var cfg config
-	fs := flag.NewFlagSet("revisions", flag.ExitOnError)
-	fs.Usage = func() { fmt.Fprint(os.Stdout, revisionsHelp) }
+	fs := flag.NewFlagSet("revisions", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { fmt.Fprint(os.Stderr, revisionsHelp) }
 	registerCommon(fs, &cfg)
-	fs.Parse(args)
+	if done, err := parseArgs(fs, revisionsHelp, args); err != nil || done {
+		return err
+	}
 
 	number, err := parseNumberArg(fs.Args(), "revisions")
 	if err != nil {

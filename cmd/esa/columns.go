@@ -85,6 +85,30 @@ func columnsNeedEnrich(cols []string) bool {
 }
 
 // renderTable はタブ区切りでヘッダ + 各行を出力する（全角/半角の桁揃えは避け、タブに委ねる）。
+// sanitizeForTerminal は TSV の 1 セルを無害化する。
+//
+// 🚨 記事タイトル・カテゴリは人が自由に書ける値で、タブや改行が入ると
+// TSV の列がずれて awk / cut が壊れる。ESC が入れば端末そのものを操作される。
+// 通すのは**値だけ**。カラム名は columnRegistry のソース定数なので、
+// 無害化してもテストで守れない行になる（変異を当てても検出できないことを実測した）。
+// カラム名を動的に決めるようになったら、そのときここも通すこと。
+// 記事本文（esa show の Markdown）はここを通さない（表ではなく、原文を保つべきもの）。
+func sanitizeForTerminal(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r':
+			b.WriteRune(' ')
+		case r < 0x20 || r == 0x7f:
+			// ESC を含む C0 制御文字と DEL は落とす
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func renderTable(results []searchResult, cols []string, header bool) string {
 	var sb strings.Builder
 	if header {
@@ -98,7 +122,7 @@ func renderTable(results []searchResult, cols []string, header bool) string {
 	for i := range results {
 		vs := make([]string, len(cols))
 		for j, c := range cols {
-			vs[j] = columnRegistry[c].extract(&results[i])
+			vs[j] = sanitizeForTerminal(columnRegistry[c].extract(&results[i]))
 		}
 		sb.WriteString(strings.Join(vs, "\t"))
 		sb.WriteByte('\n')

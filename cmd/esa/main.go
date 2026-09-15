@@ -210,6 +210,9 @@ const revisionsHelp = `esa revisions - 記事のリビジョン一覧を出力�
 `
 
 func main() {
+	// Chrome の Cookie DB の一時コピーを、Ctrl-C でも残さないようにする（cookies.go の②）。
+	installCleanupOnSignal()
+
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, topUsage)
 		os.Exit(2)

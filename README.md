@@ -82,7 +82,7 @@ esa show   <番号|URL>    記事本文を Markdown（YAML front matter 付き�
 esa meta   <番号|URL>    記事のメタ情報を出力（-comments でコメントも）
 esa revisions <番号|URL> リビジョン一覧（番号 / 更新日時 / 更新者）
 esa config               設定ファイル(config.yml)の表示・編集
-esa setup                対話式セットアップ（team/プロファイル等をまとめて設定）
+esa setup                対話式セットアップ（team と Chrome プロファイルを設定）
 esa help                 ヘルプ
 ```
 
@@ -176,7 +176,7 @@ meta 専用: `-comments`。
 > 旧ファイルは孤児として残ります（実害は自動検出が一度だけ余計に走るだけ。手で消して構いません）。
 
 ```sh
-esa config                          # 現在の有効な設定と出所(flag/env/file/default)を表示
+esa config                          # 現在の有効な設定と出所(env/file/default)を表示
 esa config set profile "Profile 3"  # 使用プロファイルを固定（自動検出をスキップ）
 esa config init                     # ログイン済みプロファイルを自動検出して profile に保存
 esa config path                     # config.yml のパスを表示

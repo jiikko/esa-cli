@@ -249,9 +249,12 @@ func configSet(key, value string) error {
 func configInit(args []string) error {
 	// -team を受け付ける（どのチームで検出するか）。
 	var cfg config
-	fs := newFlagSet("config init", configHelp)
+	fs := newFlagSet("config init")
 	registerCommon(fs, &cfg)
-	fs.Parse(args)
+	// 🚨 素の fs.Parse を呼ばない（setup.go と同じ理由。issue 005）。
+	if done, err := parseArgs(fs, configHelp, args, os.Stdout); err != nil || done {
+		return err
+	}
 
 	// profile を auto にして実際の検出を走らせ、使われるプロファイル名を得る。
 	cfg.profile = profileAuto

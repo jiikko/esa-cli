@@ -41,9 +41,13 @@ func promptDefault(r *bufio.Reader, label, def string) string {
 
 func cmdSetup(args []string) error {
 	var cfg config
-	fs := newFlagSet("setup", setupHelp)
+	fs := newFlagSet("setup")
 	registerCommon(fs, &cfg) // 現在の既定（env/config.yml）を初期値として使う
-	fs.Parse(args)
+	// 🚨 素の fs.Parse を呼ばない。ExitOnError 時代はここで os.Exit していたため
+	// --help が stdout へ出ず、フラグの誤りも exitCodeFor を通らなかった（issue 005）。
+	if done, err := parseArgs(fs, setupHelp, args, os.Stdout); err != nil || done {
+		return err
+	}
 
 	in := bufio.NewReader(os.Stdin)
 	fmt.Println("=== esa セットアップ ===")

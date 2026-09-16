@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"html"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -47,21 +48,33 @@ func registerCommon(fs *flag.FlagSet, cfg *config) {
 //   - --help: 明示的な要求なので **stdout** へ出して正常終了する（パイプで読める）
 //   - フラグの誤り: usage は stderr（stdout に混ざるとパイプが壊れる）。rc=2
 //   - 正常: そのまま続行
-func parseArgs(fs *flag.FlagSet, help string, args []string) (helpRequested bool, err error) {
+//
+// 🚨 usage を出すのはこの関数だけ（newFlagSet の fs.Usage は no-op にしてある）。
+// flag は ErrHelp を返す**前に**自分で fs.Usage を呼ぶので、そちらでも出すと
+// --help が stdout と stderr の両方に出る（実測: esa search --help が両方に 57 行。issue 005）。
+func parseArgs(fs *flag.FlagSet, help string, args []string, stdout io.Writer) (helpRequested bool, err error) {
 	if e := fs.Parse(args); e != nil {
 		if errors.Is(e, flag.ErrHelp) {
-			fmt.Fprint(os.Stdout, help)
+			fmt.Fprint(stdout, help)
 			return true, nil
 		}
+		fmt.Fprint(fs.Output(), help) // フラグの誤りのときだけ usage を stderr へ
 		return false, &usageError{"エラー: " + e.Error()}
 	}
 	return false, nil
 }
 
-// newFlagSet は共通の Usage（サブコマンド詳細 help）を設定した FlagSet を作る。
-func newFlagSet(name, help string) *flag.FlagSet {
-	fs := flag.NewFlagSet(name, flag.ExitOnError)
-	fs.Usage = func() { fmt.Fprint(os.Stderr, help) }
+// newFlagSet はサブコマンド共通の FlagSet を作る。
+//
+// 🚨 ExitOnError にしない。フラグの誤りでプロセスごと落ちると、終了コードの決定が
+// exitCodeFor を通らず、--help も parseArgs の stdout 経路へ到達しない
+// （issue 005 以前の setup / config init がこの形で、help が stderr にしか出なかった）。
+func newFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(os.Stderr) // 使い方の出力が stdout に混ざるとパイプが壊れる
+	// 🚨 no-op。flag は ErrHelp を返す前にここを呼ぶため、ここでも出すと
+	// parseArgs が stdout へ出す --help と二重になる。usage は parseArgs が出す。
+	fs.Usage = func() {}
 	return fs
 }
 
@@ -335,9 +348,7 @@ func cmdSearch(args []string) error {
 	var perPage, page int
 	var columnsSpec string
 	var fast, noHeader bool
-	fs := flag.NewFlagSet("search", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() { fmt.Fprint(os.Stderr, searchHelp) }
+	fs := newFlagSet("search")
 	registerCommon(fs, &cfg)
 	fs.IntVar(&perPage, "n", 50, "取得件数（公式 API 使用時の per_page。最大 100）")
 	fs.IntVar(&page, "page", 1, "ページ番号")
@@ -345,7 +356,7 @@ func cmdSearch(args []string) error {
 	fs.StringVar(&columnsSpec, "c", defaultColumns, "-columns の別名")
 	fs.BoolVar(&fast, "fast", false, "詳細取得(各記事JSON)を省略して高速化（number/title/url のみ確実）")
 	fs.BoolVar(&noHeader, "no-header", false, "ヘッダ行を出力しない")
-	if done, err := parseArgs(fs, searchHelp, args); err != nil || done {
+	if done, err := parseArgs(fs, searchHelp, args, os.Stdout); err != nil || done {
 		return err
 	}
 	if err := checkNoTrailingFlags(fs, fs.Args()); err != nil {
@@ -401,11 +412,9 @@ func cmdSearch(args []string) error {
 
 func cmdShow(args []string) error {
 	var cfg config
-	fs := flag.NewFlagSet("show", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() { fmt.Fprint(os.Stderr, showHelp) }
+	fs := newFlagSet("show")
 	registerCommon(fs, &cfg)
-	if done, err := parseArgs(fs, showHelp, args); err != nil || done {
+	if done, err := parseArgs(fs, showHelp, args, os.Stdout); err != nil || done {
 		return err
 	}
 
@@ -431,12 +440,10 @@ func cmdShow(args []string) error {
 func cmdMeta(args []string) error {
 	var cfg config
 	var withComments bool
-	fs := flag.NewFlagSet("meta", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() { fmt.Fprint(os.Stderr, metaHelp) }
+	fs := newFlagSet("meta")
 	registerCommon(fs, &cfg)
 	fs.BoolVar(&withComments, "comments", false, "コメントも取得する")
-	if done, err := parseArgs(fs, metaHelp, args); err != nil || done {
+	if done, err := parseArgs(fs, metaHelp, args, os.Stdout); err != nil || done {
 		return err
 	}
 
@@ -488,11 +495,9 @@ func cmdMeta(args []string) error {
 
 func cmdRevisions(args []string) error {
 	var cfg config
-	fs := flag.NewFlagSet("revisions", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() { fmt.Fprint(os.Stderr, revisionsHelp) }
+	fs := newFlagSet("revisions")
 	registerCommon(fs, &cfg)
-	if done, err := parseArgs(fs, revisionsHelp, args); err != nil || done {
+	if done, err := parseArgs(fs, revisionsHelp, args, os.Stdout); err != nil || done {
 		return err
 	}
 

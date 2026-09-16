@@ -87,6 +87,8 @@ esa help                 ヘルプ
 ```
 
 - ヘルプは 2 段構え: `esa --help` でサブコマンド一覧、`esa <サブコマンド> --help` で各コマンドの詳細。
+  **`--help` は stdout に出る**ので `esa search --help | less` のようにパイプへ流せる。
+  フラグの誤りの usage は stderr（rc=2）。
 - `<番号>` は記事 URL 末尾の数値。`esa show https://<team>.esa.io/posts/28025` のように URL でも可。
 - 終了コード: `0`=成功 / `1`=実行時エラー（認証切れ・404・ネットワーク等）/ `2`=使い方の誤り。
   引数不足時は「使い方 + `--help` への案内」を stderr に出して `2` で終わる。

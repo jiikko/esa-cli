@@ -10,10 +10,15 @@ import (
 )
 
 // fileConfig は config.yml の内容。すべて任意項目。
+//
+// 🚨 `browser` キーは issue 003 で廃止した（Chrome 専用にしたため）。
+// loadFileConfig は素の yaml.Unmarshal なので、既存の `browser: Brave` は
+// 黙って無視される。さらに saveFileConfig は読み込んだ構造体を書き戻すため、
+// `esa config set` / `esa setup` / `esa config init` を一度でも実行すると
+// 既存の `browser:` 行はファイルから消える（承知の上）。
 type fileConfig struct {
 	Profile string `yaml:"profile,omitempty"`
 	Team    string `yaml:"team,omitempty"`
-	Browser string `yaml:"browser,omitempty"`
 }
 
 // configDir は設定ディレクトリ（$XDG_CONFIG_HOME/esa-cli、無ければ ~/.config/esa-cli）を返す。
@@ -87,7 +92,7 @@ func saveFileConfig(fc fileConfig) error {
 	}
 	header := "# esa-cli 設定ファイル（esa config set で更新できます）\n" +
 		"# profile: 使用する Chrome プロファイル名（auto でログイン済みを自動検出）\n" +
-		"# team: チーム名（サブドメイン） / browser: Chrome/Brave/Chromium/Edge/Vivaldi\n"
+		"# team: チーム名（サブドメイン）\n"
 	if err := os.WriteFile(path, append([]byte(header), data...), 0o600); err != nil {
 		return err
 	}
@@ -109,7 +114,7 @@ func resolveDefault(envKey, fileVal, builtin string) string {
 const configHelp = `esa config - 設定ファイル(config.yml)を表示・編集する
 
 config.yml の場所: $XDG_CONFIG_HOME/esa-cli/config.yml（未設定なら ~/.config/esa-cli/config.yml）
-設定できるキー: profile / team / browser
+設定できるキー: profile / team
 優先順位: コマンドラインフラグ > 環境変数 > config.yml > 組み込み既定
 
 使い方:
@@ -125,7 +130,10 @@ config.yml の場所: $XDG_CONFIG_HOME/esa-cli/config.yml（未設定なら ~/.c
   esa config                           # 今の有効設定を確認
 `
 
-var configKeys = map[string]bool{"profile": true, "team": true, "browser": true}
+// configKeys は config.yml に設定できるキー。
+// 🚨 `browser` は issue 003 で廃止した。ここへ戻すと fileConfig にフィールドが無いので
+// 「保存した」と表示しながら何も書かれない状態になる（config_browser_removed_test.go が守る）。
+var configKeys = map[string]bool{"profile": true, "team": true}
 
 func cmdConfig(args []string) error {
 	sub := ""
@@ -144,13 +152,13 @@ func cmdConfig(args []string) error {
 		return nil
 	case "get":
 		if len(args) < 2 {
-			return &usageError{"エラー: キー名を指定してください。\n使い方: esa config get <profile|team|browser>"}
+			return &usageError{"エラー: キー名を指定してください。\n使い方: esa config get <profile|team>"}
 		}
 		return configGet(args[1])
 	case "set":
 		// 🚨 読めなかったファイルを「読めたこと」にして上書きしない。
 		// 以前は解析に失敗しても警告だけ出してゼロ値から書き直しており、
-		// 他の設定（team / browser 等）が黙って消えた。
+		// 他の設定（team / profile 等）が黙って消えた。
 		if err := fileConfigProblem(); err != nil {
 			path, _ := configFilePath()
 			return &usageError{fmt.Sprintf(
@@ -158,7 +166,7 @@ func cmdConfig(args []string) error {
 					"  ファイルを直すか削除してから、もう一度実行してください: %s", err, path)}
 		}
 		if len(args) < 3 {
-			return &usageError{"エラー: キーと値を指定してください。\n使い方: esa config set <profile|team|browser> <値>\n例:     esa config set profile \"Profile 3\""}
+			return &usageError{"エラー: キーと値を指定してください。\n使い方: esa config set <profile|team> <値>\n例:     esa config set profile \"Profile 3\""}
 		}
 		return configSet(args[1], args[2])
 	case "init":
@@ -190,7 +198,6 @@ func configShow() error {
 		return builtin, "default"
 	}
 	team, teamSrc := resolve("ESA_TEAM", fc.Team, "")
-	browser, browserSrc := resolve("ESA_BROWSER", fc.Browser, "Chrome")
 	profile, profileSrc := resolve("ESA_CHROME_PROFILE", fc.Profile, "auto")
 
 	fmt.Printf("config file: %s%s\n", path, map[bool]string{true: "", false: "  (未作成)"}[exists])
@@ -199,7 +206,6 @@ func configShow() error {
 		team, teamSrc = "(未設定)", "none"
 	}
 	fmt.Printf("  %-8s %-14s (%s)\n", "team:", team, teamSrc)
-	fmt.Printf("  %-8s %-14s (%s)\n", "browser:", browser, browserSrc)
 	fmt.Printf("  %-8s %-14s (%s)\n", "profile:", profile, profileSrc)
 	if profile == "auto" {
 		fmt.Println("\nヒント: プロファイルを固定するなら  esa config set profile \"Profile 3\"  または  esa config init")
@@ -209,7 +215,7 @@ func configShow() error {
 
 func configGet(key string) error {
 	if !configKeys[key] {
-		return &usageError{fmt.Sprintf("エラー: 不明なキー %q（指定可能: profile, team, browser）", key)}
+		return &usageError{fmt.Sprintf("エラー: 不明なキー %q（指定可能: profile, team）", key)}
 	}
 	fc := loadFileConfig()
 	switch key {
@@ -217,15 +223,13 @@ func configGet(key string) error {
 		fmt.Println(fc.Profile)
 	case "team":
 		fmt.Println(fc.Team)
-	case "browser":
-		fmt.Println(fc.Browser)
 	}
 	return nil
 }
 
 func configSet(key, value string) error {
 	if !configKeys[key] {
-		return &usageError{fmt.Sprintf("エラー: 不明なキー %q（指定可能: profile, team, browser）", key)}
+		return &usageError{fmt.Sprintf("エラー: 不明なキー %q（指定可能: profile, team）", key)}
 	}
 	fc := loadFileConfig()
 	switch key {
@@ -233,8 +237,6 @@ func configSet(key, value string) error {
 		fc.Profile = value
 	case "team":
 		fc.Team = value
-	case "browser":
-		fc.Browser = value
 	}
 	if err := saveFileConfig(fc); err != nil {
 		return err
@@ -245,7 +247,7 @@ func configSet(key, value string) error {
 }
 
 func configInit(args []string) error {
-	// -team / -browser を受け付ける（どのブラウザ/チームで検出するか）。
+	// -team を受け付ける（どのチームで検出するか）。
 	var cfg config
 	fs := newFlagSet("config init", configHelp)
 	registerCommon(fs, &cfg)
@@ -261,9 +263,6 @@ func configInit(args []string) error {
 	fc.Profile = name
 	if fc.Team == "" && cfg.team != "" {
 		fc.Team = cfg.team
-	}
-	if fc.Browser == "" && cfg.browser != "Chrome" {
-		fc.Browser = cfg.browser
 	}
 	if err := saveFileConfig(fc); err != nil {
 		return err

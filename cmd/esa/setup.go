@@ -10,7 +10,7 @@ import (
 
 const setupHelp = `esa setup - 対話式セットアップウィザード
 
-team・browser・使用プロファイルを順に尋ね、認証確認のうえ config.yml に保存する。
+team・使用する Chrome プロファイルを順に尋ね、認証確認のうえ config.yml に保存する。
 プロファイルは候補ごとに「ログイン中メール」と「esa 認証が通るか」を表示して選べる。
 
 使い方:
@@ -57,26 +57,15 @@ func cmdSetup(args []string) error {
 	}
 	cfg.team = team
 
-	// 2. browser
-	browser := strings.TrimSpace(promptDefault(in, "Cookie を読むブラウザ（Chrome/Brave/Chromium/Edge/Vivaldi）", cfg.browser))
-	if browser == "" {
-		browser = "Chrome"
-	}
-	bp, ok := browserProfiles[browser]
-	if !ok {
-		return fmt.Errorf("未対応のブラウザ %q（対応: Chrome/Brave/Chromium/Edge/Vivaldi）", browser)
-	}
-	cfg.browser = browser
-
-	// 3. プロファイル検出（esa Cookie を持つものを列挙し、認証可否とメールを表示）
-	fmt.Printf("\n%s のプロファイルを調べています（%s の認証を確認）...\n", browser, cfg.teamHost())
+	// 2. プロファイル検出（esa Cookie を持つものを列挙し、認証可否とメールを表示）
+	fmt.Printf("\n%s のプロファイルを調べています（%s の認証を確認）...\n", chromeName, cfg.teamHost())
 	type cand struct {
 		dir, email string
 		authed     bool
 	}
 	var cands []cand
 	firstAuthed := -1
-	for _, pi := range listProfileInfos(bp) {
+	for _, pi := range listProfileInfos() {
 		c, err := buildClientForProfile(cfg, pi.dir)
 		if err != nil {
 			continue // esa Cookie が無いプロファイルは候補外
@@ -91,7 +80,7 @@ func cmdSetup(args []string) error {
 		return fmt.Errorf(
 			"%s に esa（%s）の Cookie を持つプロファイルが見つかりませんでした。\n"+
 				"  %s で https://%s にログインしてから、もう一度 esa setup を実行してください。",
-			browser, cfg.teamHost(), browser, cfg.teamHost())
+			chromeName, cfg.teamHost(), chromeName, cfg.teamHost())
 	}
 
 	fmt.Println("\n候補プロファイル:")
@@ -108,7 +97,7 @@ func cmdSetup(args []string) error {
 	}
 	if firstAuthed < 0 {
 		fmt.Println("\n注意: どのプロファイルも現在このチームで認証が通っていません（セッション切れの可能性）。")
-		fmt.Printf("      Chrome で https://%s にログインし直すと確実です。\n", cfg.teamHost())
+		fmt.Printf("      %s で https://%s にログインし直すと確実です。\n", chromeName, cfg.teamHost())
 	}
 
 	def := ""
@@ -126,22 +115,17 @@ func cmdSetup(args []string) error {
 	}
 	cfg.profile = chosen.dir
 
-	// 4. 保存
+	// 3. 保存
 	fc := loadFileConfig()
 	fc.Team = cfg.team
 	fc.Profile = cfg.profile
-	if browser != "Chrome" {
-		fc.Browser = browser
-	} else {
-		fc.Browser = "" // 既定なので省略
-	}
 	if err := saveFileConfig(fc); err != nil {
 		return err
 	}
 	path, _ := configFilePath()
 
 	fmt.Printf("\n保存しました: %s\n", path)
-	fmt.Printf("  team=%s  browser=%s  profile=%s\n", cfg.team, browser, cfg.profile)
+	fmt.Printf("  team=%s  profile=%s\n", cfg.team, cfg.profile)
 	fmt.Println("\n準備完了。次のように使えます:")
 	fmt.Println("  esa search 'キーワード'")
 	fmt.Println("  esa show <番号>")

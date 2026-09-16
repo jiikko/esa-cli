@@ -57,7 +57,7 @@ pure Go（`modernc.org/sqlite`）なので `CGO_ENABLED=0` でビルド可。mac
 
 対象チームは特定サービスに依存しないため、最初に自分のチーム名を設定する（`https://<team>.esa.io` の `<team>` 部分）。
 
-おすすめは対話式ウィザード（team・ブラウザ・使用プロファイルをまとめて設定。候補プロファイルの
+おすすめは対話式ウィザード（team・使用する Chrome プロファイルをまとめて設定。候補プロファイルの
 ログイン中メールと「認証が通るか」を見ながら選べる）:
 
 ```sh
@@ -144,8 +144,7 @@ esa search -json 'in:設計' | jq -r '.[].number'                  # JSON で受
 | フラグ | 環境変数 | 既定 | 説明 |
 |---|---|---|---|
 | `-team <name>` | `ESA_TEAM` | （必須） | チーム名。`https://<team>.esa.io` の `<team>` |
-| `-browser <name>` | `ESA_BROWSER` | `Chrome` | Cookie を読むブラウザ（Chrome/Brave/Chromium/Edge/Vivaldi） |
-| `-profile <name>` | `ESA_CHROME_PROFILE` | `auto` | ブラウザのプロファイル。`auto` はログイン済みを自動検出 |
+| `-profile <name>` | `ESA_CHROME_PROFILE` | `auto` | Chrome のプロファイル。`auto` はログイン済みを自動検出 |
 | `-json` | — | off | JSON で出力（search / meta / revisions。show は常に Markdown） |
 
 search 専用: `-c` / `-columns`、`-no-header`、`-fast`、`-n <数>`、`-page <数>`。
@@ -163,7 +162,18 @@ meta 専用: `-comments`。
 
 - 場所: `$XDG_CONFIG_HOME/esa-cli/config.yml`（未設定なら `~/.config/esa-cli/config.yml`）
 - 優先順位: **コマンドラインフラグ > 環境変数 > config.yml > 組み込み既定**
-- キー: `profile` / `team` / `browser`
+- キー: `profile` / `team`
+
+> **`browser` キーは廃止しました（Chrome 専用）。** 以前あった `-browser` フラグ / `ESA_BROWSER` /
+> config.yml の `browser` キーは削除済みです（issue 003）。理由は、Chrome 以外の対応表の値
+> （Keychain のサービス名・Application Support のディレクトリ名）を実機で確認できないため。
+> 既存の `browser:` 行は無視され、`esa config set`/`setup`/`config init` の書き戻しで消えます。
+> （書き戻しは config.yml を `profile` / `team` から組み立て直すので、**手で書いたコメント行や
+> 未知のキーも一緒に消えます**。これは以前からの挙動ですが、`browser` は「かつて正式なキーだった値」
+> として初めてこれに当たります。残したい記述があれば書き戻し前に控えてください。）
+> `esa config set browser X` は「不明なキー」エラーになります。
+> プロファイルの検出キャッシュ名も `profile-<ブラウザ>-<team>` から `profile-<team>` に変わったため、
+> 旧ファイルは孤児として残ります（実害は自動検出が一度だけ余計に走るだけ。手で消して構いません）。
 
 ```sh
 esa config                          # 現在の有効な設定と出所(flag/env/file/default)を表示
@@ -178,7 +188,6 @@ config.yml の例:
 ```yaml
 team: myteam        # https://myteam.esa.io の myteam 部分
 profile: Profile 3  # 使用する Chrome プロファイル（省略時は auto で自動検出）
-# browser: Chrome
 ```
 
 > 補足: `search` を公式 API(api.esa.io) で高速化したい場合は環境変数 `ESA_TOKEN` を使う

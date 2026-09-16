@@ -15,7 +15,7 @@ const profileAuto = "auto"
 // buildClientForProfile は指定プロファイルの Cookie でクライアントを構築する。
 // esa 宛て Cookie が無い場合はエラー（自動検出時は次の候補へ進むために使う）。
 func buildClientForProfile(cfg config, profile string) (*client, error) {
-	cookies, err := extractCookiesForProfile(cfg.browser, profile)
+	cookies, err := extractCookiesForProfile(profile)
 	if err != nil {
 		return nil, err
 	}
@@ -27,8 +27,8 @@ func buildClientForProfile(cfg config, profile string) (*client, error) {
 }
 
 // extractCookiesForProfile は extractCookies の薄いラッパー（意図を明示するため）。
-func extractCookiesForProfile(browser, profile string) ([]cookieEntry, error) {
-	return extractCookies(browser, profile)
+func extractCookiesForProfile(profile string) ([]cookieEntry, error) {
+	return extractCookies(profile)
 }
 
 // resolveProfile は実効プロファイルとクライアントを決定する。
@@ -50,20 +50,15 @@ func resolveProfileClient(cfg config) (string, *client, error) {
 		return cfg.profile, c, err
 	}
 
-	bp, ok := browserProfiles[cfg.browser]
-	if !ok {
-		return "", nil, fmt.Errorf("未対応のブラウザ %q", cfg.browser)
-	}
-
 	// 1. キャッシュ済みプロファイルを試す（前回の自動検出結果）。
-	if cached := readProfileCache(cfg.browser, cfg.team); cached != "" {
+	if cached := readProfileCache(cfg.team); cached != "" {
 		if c, err := buildClientForProfile(cfg, cached); err == nil && c.authOK() {
 			return cached, c, nil
 		}
 	}
 
 	// 2. 全プロファイルを走査し、認証が通る最初のものを採用する。
-	profiles := listBrowserProfiles(bp)
+	profiles := listChromeProfiles()
 	var triedWithCookie int
 	for _, p := range profiles {
 		c, err := buildClientForProfile(cfg, p)
@@ -72,7 +67,7 @@ func resolveProfileClient(cfg config) (string, *client, error) {
 		}
 		triedWithCookie++
 		if c.authOK() {
-			writeProfileCache(cfg.browser, cfg.team, p)
+			writeProfileCache(cfg.team, p)
 			fmt.Fprintf(os.Stderr, "esa: ログイン済みプロファイル %q を自動検出しました（esa config set profile %q で固定できます）\n", p, p)
 			return p, c, nil
 		}
@@ -81,26 +76,26 @@ func resolveProfileClient(cfg config) (string, *client, error) {
 	if triedWithCookie > 0 {
 		return "", nil, fmt.Errorf(
 			"esa の Cookie を持つプロファイルはありましたが、いずれも認証が通りませんでした（%d 件試行）。\n"+
-				"  %s の Web にログインしているブラウザ/プロファイルか確認し、セッションが切れていれば Chrome でログインし直してください。",
-			triedWithCookie, cfg.teamHost())
+				"  %s の Web にログインしている %s プロファイルか確認し、セッションが切れていればログインし直してください。",
+			triedWithCookie, cfg.teamHost(), chromeName)
 	}
 	return "", nil, fmt.Errorf(
 		"%s 宛ての Cookie を持つ %s プロファイルが見つかりませんでした。\n"+
-			"  対象ブラウザ（-browser / ESA_BROWSER）で https://%s にログインしているか確認してください。",
-		cfg.teamHost(), cfg.browser, cfg.teamHost())
+			"  %s で https://%s にログインしているか確認してください（このツールは Chrome 専用です）。",
+		cfg.teamHost(), chromeName, chromeName, cfg.teamHost())
 }
 
-// listBrowserProfiles は Local State からプロファイルのディレクトリ名を列挙する。
+// listChromeProfiles は Local State からプロファイルのディレクトリ名を列挙する。
 // 読み取れない場合は既定的な候補（Default / Profile N）にフォールバックする。
-func listBrowserProfiles(bp browserProfile) []string {
+func listChromeProfiles() []string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return []string{"Default"}
 	}
-	lsPath := filepath.Join(home, "Library", "Application Support", bp.supportSubdir, "Local State")
+	lsPath := filepath.Join(home, "Library", "Application Support", chromeSupportSubdir, "Local State")
 	data, err := os.ReadFile(lsPath)
 	if err != nil {
-		return fallbackProfiles(home, bp)
+		return fallbackProfiles(home)
 	}
 	// info_cache のキー（プロファイルのディレクトリ名）だけを取り出す。暗号鍵等は読まない。
 	var ls struct {
@@ -110,7 +105,7 @@ func listBrowserProfiles(bp browserProfile) []string {
 		} `json:"profile"`
 	}
 	if err := json.Unmarshal(data, &ls); err != nil || len(ls.Profile.InfoCache) == 0 {
-		return fallbackProfiles(home, bp)
+		return fallbackProfiles(home)
 	}
 	profiles := make([]string, 0, len(ls.Profile.InfoCache))
 	for dir := range ls.Profile.InfoCache {
@@ -130,8 +125,8 @@ func listBrowserProfiles(bp browserProfile) []string {
 }
 
 // fallbackProfiles は Local State が読めないときに、実在するディレクトリを走査する。
-func fallbackProfiles(home string, bp browserProfile) []string {
-	base := filepath.Join(home, "Library", "Application Support", bp.supportSubdir)
+func fallbackProfiles(home string) []string {
+	base := filepath.Join(home, "Library", "Application Support", chromeSupportSubdir)
 	entries, err := os.ReadDir(base)
 	if err != nil {
 		return []string{"Default"}
@@ -166,7 +161,7 @@ func (c *client) authOK() bool {
 
 // --- 検出結果のキャッシュ（cwd 非依存: UserConfigDir 配下） ---
 
-func profileCachePath(browser, team string) (string, error) {
+func profileCachePath(team string) (string, error) {
 	dir, err := configDir()
 	if err != nil {
 		return "", err
@@ -175,12 +170,15 @@ func profileCachePath(browser, team string) (string, error) {
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return "", err
 	}
-	// ブラウザ・チームごとに分ける。
-	return filepath.Join(cacheDir, fmt.Sprintf("profile-%s-%s", browser, team)), nil
+	// チームごとに分ける。
+	// 🚨 以前は "profile-<ブラウザ>-<team>" だった（issue 003 で Chrome 専用にした際に
+	// ブラウザ成分を落とした）。旧名のファイルは孤児として残るが、自動検出が一度だけ
+	// 余計に走って新しい名前で書き直されるだけなので、掃除機構は持たない。
+	return filepath.Join(cacheDir, fmt.Sprintf("profile-%s", team)), nil
 }
 
-func readProfileCache(browser, team string) string {
-	p, err := profileCachePath(browser, team)
+func readProfileCache(team string) string {
+	p, err := profileCachePath(team)
 	if err != nil {
 		return ""
 	}
@@ -191,8 +189,8 @@ func readProfileCache(browser, team string) string {
 	return strings.TrimSpace(string(b))
 }
 
-func writeProfileCache(browser, team, profile string) {
-	p, err := profileCachePath(browser, team)
+func writeProfileCache(team, profile string) {
+	p, err := profileCachePath(team)
 	if err != nil {
 		return
 	}
@@ -208,17 +206,17 @@ type profileInfo struct {
 
 // listProfileInfos は Local State からプロファイルとメール/表示名を取得する。
 // 読めない場合はディレクトリ名のみ（メール空）で返す。
-func listProfileInfos(bp browserProfile) []profileInfo {
+func listProfileInfos() []profileInfo {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil
 	}
-	lsPath := filepath.Join(home, "Library", "Application Support", bp.supportSubdir, "Local State")
+	lsPath := filepath.Join(home, "Library", "Application Support", chromeSupportSubdir, "Local State")
 	data, err := os.ReadFile(lsPath)
 	if err != nil {
 		// フォールバック: ディレクトリ名のみ
 		var out []profileInfo
-		for _, d := range fallbackProfiles(home, bp) {
+		for _, d := range fallbackProfiles(home) {
 			out = append(out, profileInfo{dir: d})
 		}
 		return out
@@ -234,7 +232,7 @@ func listProfileInfos(bp browserProfile) []profileInfo {
 	}
 	if err := json.Unmarshal(data, &ls); err != nil || len(ls.Profile.InfoCache) == 0 {
 		var out []profileInfo
-		for _, d := range fallbackProfiles(home, bp) {
+		for _, d := range fallbackProfiles(home) {
 			out = append(out, profileInfo{dir: d})
 		}
 		return out

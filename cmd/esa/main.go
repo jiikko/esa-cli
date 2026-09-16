@@ -20,8 +20,7 @@ import (
 // config は解決済みの実行設定。
 type config struct {
 	team    string // チーム名（サブドメイン）例: myteam（https://myteam.esa.io の myteam 部分）
-	browser string // Chrome / Brave / ...
-	profile string // Default / Profile 1 / ...
+	profile string // Default / Profile 1 / ...（Chrome のプロファイル）
 	asJSON  bool
 }
 
@@ -39,8 +38,7 @@ func envOr(key, def string) string {
 func registerCommon(fs *flag.FlagSet, cfg *config) {
 	fc := loadFileConfig()
 	fs.StringVar(&cfg.team, "team", resolveDefault("ESA_TEAM", fc.Team, ""), "esa チーム名（サブドメイン。必須）https://<team>.esa.io の <team> / ESA_TEAM / config.yml team")
-	fs.StringVar(&cfg.browser, "browser", resolveDefault("ESA_BROWSER", fc.Browser, "Chrome"), "Cookie を読むブラウザ（Chrome/Brave/Chromium/Edge/Vivaldi）/ ESA_BROWSER / config.yml browser")
-	fs.StringVar(&cfg.profile, "profile", resolveDefault("ESA_CHROME_PROFILE", fc.Profile, "auto"), "ブラウザのプロファイル名。既定 auto（自動検出）/ ESA_CHROME_PROFILE / config.yml profile")
+	fs.StringVar(&cfg.profile, "profile", resolveDefault("ESA_CHROME_PROFILE", fc.Profile, "auto"), "Chrome のプロファイル名。既定 auto（自動検出）/ ESA_CHROME_PROFILE / config.yml profile")
 	fs.BoolVar(&cfg.asJSON, "json", false, "機械可読な JSON で出力する")
 }
 
@@ -89,8 +87,7 @@ const topUsage = `esa - <team>.esa.io（社内 esa）ドキュメント参照 CL
 
 共通オプション（全サブコマンド）:
   -team <name>     チーム名（サブドメイン）。必須。https://<team>.esa.io の <team>（ESA_TEAM / config でも可）
-  -browser <name>  Cookie を読むブラウザ Chrome/Brave/Chromium/Edge/Vivaldi。既定 Chrome（ESA_BROWSER）
-  -profile <name>  プロファイル。既定 auto=ログイン済みを自動検出（ESA_CHROME_PROFILE）
+  -profile <name>  Chrome のプロファイル。既定 auto=ログイン済みを自動検出（ESA_CHROME_PROFILE）
   -json            JSON で出力（search / meta / revisions。show は常に Markdown）
 
 設定の優先順位: コマンドラインフラグ > 環境変数 > config.yml > 既定
@@ -126,7 +123,7 @@ const searchHelp = `esa search - 記事を検索する（結果は TSV。表示�
   -n <数>              取得件数目安（ESA_TOKEN 使用時の per_page、最大 100）
   -page <数>           ページ番号
   -json                各記事オブジェクトの配列を JSON で出力
-  （共通オプション -team/-browser/-profile は esa --help を参照）
+  （共通オプション -team/-profile は esa --help を参照）
 
 指定可能なカラム（-c / -columns）:
   number      記事番号
@@ -179,7 +176,7 @@ const showHelp = `esa show - 記事本文を Markdown で出力する
 出力:
   YAML front matter（title/category/tags/created_at/updated_at/number 等）+ 本文の Markdown。
   そのまま grep や less、glow に流せる。-json は無効（show は常に Markdown）。
-  （共通オプション -team/-browser/-profile は esa --help を参照）
+  （共通オプション -team/-profile は esa --help を参照）
 
 例:
   esa show 28025
@@ -197,7 +194,7 @@ const metaHelp = `esa meta - 記事のメタ情報を出力する
 オプション:
   -comments   コメントも取得して表示する
   -json       記事オブジェクト全体を JSON で出力
-  （共通オプション -team/-browser/-profile は esa --help を参照）
+  （共通オプション -team/-profile は esa --help を参照）
 
 既定の表示（読みやすい key: value 形式）:
   number / full_name / wip / category / tags / created_at / updated_at /
@@ -218,7 +215,7 @@ const revisionsHelp = `esa revisions - 記事のリビジョン一覧を出力�
 出力:
   「リビジョン番号 / 更新日時 / 更新者 screen_name」をタブ区切りで（新しい順）。
   -json で生の JSON を出力。
-  （共通オプション -team/-browser/-profile は esa --help を参照）
+  （共通オプション -team/-profile は esa --help を参照）
 
 例:
   esa revisions 28025

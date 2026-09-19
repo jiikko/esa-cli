@@ -26,6 +26,9 @@ brew install jiikko/tap/esa
 
 インストール時に Go（build 依存）が自動で入り、ソースからビルドされる。アップデートは `brew upgrade esa`、削除は `brew uninstall esa`。
 
+formula の正本は [jiikko/homebrew-tap](https://github.com/jiikko/homebrew-tap) の `Formula/esa.rb` **のみ**。
+このリポジトリには写しを置かない（2 箇所に同じものがあると、片方だけ直したときに静かにずれるため）。
+
 go install（バイナリ名は `esa`）:
 
 ```sh

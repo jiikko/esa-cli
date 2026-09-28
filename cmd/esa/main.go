@@ -208,9 +208,11 @@ const metaHelp = `esa meta - 記事のメタ情報を出力する
 オプション:
   -comments   コメントも取得して表示する
   -json       記事オブジェクト全体を JSON で出力
-  -copy       タイトルをリンクにした形でクリップボードへコピーする（Slack 等に貼る用）。
-              HTML（<a href=URL>タイトル</a>）と「タイトル URL」のテキストを同時に入れる。
-              -json / -comments とは併用不可
+  -copy       記事の紹介カードをクリップボードへコピーする（Slack 等に貼る用）。
+              タイトル（リンク）/ カテゴリ・作成者・更新日・タグ / 本文の冒頭 120 文字。
+              HTML と テキスト（最終行に URL）を同時に入れる
+  -copy-title タイトルをリンクにした形だけをコピーする（「タイトル URL」）
+              -copy / -copy-title は -json / -comments とは併用不可
   （共通オプション -team/-profile は esa --help を参照）
 
 既定の表示（読みやすい key: value 形式）:
@@ -222,6 +224,7 @@ const metaHelp = `esa meta - 記事のメタ情報を出力する
   esa meta 28025 -comments
   esa meta 28025 -json | jq '.updated_by.screen_name'
   esa meta -copy https://<team>.esa.io/posts/28025
+  esa meta -copy-title 28025
 `
 
 // revisionsHelp は `esa revisions --help` の詳細。
@@ -475,17 +478,22 @@ func cmdShow(args []string) error {
 
 func cmdMeta(args []string) error {
 	var cfg config
-	var withComments, toClipboard bool
+	var withComments, toClipboard, titleOnly bool
 	fs := newFlagSet("meta")
 	registerCommon(fs, &cfg)
 	fs.BoolVar(&withComments, "comments", false, "コメントも取得する")
-	fs.BoolVar(&toClipboard, "copy", false, "タイトルをリンクにした形でクリップボードへコピーする")
+	fs.BoolVar(&toClipboard, "copy", false, "記事の紹介カードをクリップボードへコピーする")
+	fs.BoolVar(&titleOnly, "copy-title", false, "タイトルをリンクにした形だけをクリップボードへコピーする")
 	number, done, err := parseTargetArgs(fs, metaHelp, args, "meta")
 	if err != nil || done {
 		return err
 	}
+	if toClipboard && titleOnly {
+		return &usageError{"エラー: -copy と -copy-title はどちらか一方だけ指定してください。\n詳細:   esa meta --help"}
+	}
+	toClipboard = toClipboard || titleOnly
 	if toClipboard && (cfg.asJSON || withComments) {
-		return &usageError{"エラー: -copy は -json / -comments と同時に使えません。\n詳細:   esa meta --help"}
+		return &usageError{"エラー: -copy / -copy-title は -json / -comments と同時に使えません。\n詳細:   esa meta --help"}
 	}
 	c, err := buildCookieClient(cfg)
 	if err != nil {
@@ -497,7 +505,11 @@ func cmdMeta(args []string) error {
 	}
 
 	if toClipboard {
-		plain, htmlDoc, err := slackLink(post)
+		build := slackCard
+		if titleOnly {
+			build = slackLink
+		}
+		plain, htmlDoc, err := build(post)
 		if err != nil {
 			return err
 		}

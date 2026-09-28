@@ -136,10 +136,55 @@ func TestParseTargetArgsReportsHelp(t *testing.T) {
 
 func TestMetaCopyRejectsJSONAndComments(t *testing.T) {
 	blockRealBackends(t) // 退行して通信へ進んでも実環境（Keychain・実 esa）に届かせない
-	for _, args := range [][]string{{"-copy", "-json", "1"}, {"1", "-copy", "-comments"}} {
+	for _, args := range [][]string{{"-copy", "-json", "1"}, {"1", "-copy", "-comments"}, {"-copy-title", "-json", "1"}, {"-copy", "-copy-title", "1"}} {
 		var ue *usageError
 		if err := cmdMeta(args); !errors.As(err, &ue) {
 			t.Errorf("%q: 使い方の誤りにならない: %v", args, err)
 		}
+	}
+}
+
+// -copy の既定（紹介カード）: タイトルは HTML ではリンク、テキストでは最終行に URL。
+// カテゴリ・タグ・本文はエスケープし、esa のエスケープ（&#47; 等）は復元する。
+func TestSlackCardLayoutAndEscaping(t *testing.T) {
+	post := map[string]any{
+		"name": "a&#47;b <x>", "url": "https://t.esa.io/posts/1?a=1&b=2", "wip": true,
+		"category":   "dev&#47;Tips",
+		"created_by": map[string]any{"screen_name": "koji"},
+		"updated_at": "2026-09-28T10:13:30+09:00",
+		"tags":       []any{"go", "<tui>"},
+		"body_md":    "# 見出し\n\n```\nsecret code\n```\n本文の[リンク](https://x)と**強調**。 x<y&z\n| 表 |\n",
+	}
+	plain, htmlDoc, err := slackCard(post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPlain := "📄 [WIP] a/b <x>\ndev/Tips / @koji / 2026-09-28 / #go #<tui>\n> 見出し 本文のリンクと強調。 x<y&z\nhttps://t.esa.io/posts/1?a=1&b=2"
+	if plain != wantPlain {
+		t.Errorf("plain =\n%s\nwant\n%s", plain, wantPlain)
+	}
+	wantHTML := `<meta charset="utf-8">📄 <a href="https://t.esa.io/posts/1?a=1&amp;b=2">[WIP] a/b &lt;x&gt;</a><br>` +
+		`dev/Tips / @koji / 2026-09-28 / #go #&lt;tui&gt;<br><blockquote>見出し 本文のリンクと強調。 x&lt;y&amp;z</blockquote>`
+	if htmlDoc != wantHTML {
+		t.Errorf("html =\n%s\nwant\n%s", htmlDoc, wantHTML)
+	}
+	if _, _, err := slackCard(map[string]any{"name": "x"}); err == nil {
+		t.Error("URL が無いのに成功した")
+	}
+}
+
+// 概要は文字数（rune）で切り、超えたら … を付ける。無い要素（本文・メタ）の行は出さない。
+func TestSlackCardTruncatesByRunesAndOmitsEmptyLines(t *testing.T) {
+	long := strings.Repeat("あ", excerptRunes+5)
+	plain, _, err := slackCard(map[string]any{"name": "t", "url": "https://t.esa.io/posts/2", "body_md": long})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "📄 t\n> " + strings.Repeat("あ", excerptRunes) + "…\nhttps://t.esa.io/posts/2"; plain != want {
+		t.Errorf("plain = %q, want %q", plain, want)
+	}
+	plain, _, _ = slackCard(map[string]any{"name": "t", "url": "https://t.esa.io/posts/2"})
+	if want := "📄 t\nhttps://t.esa.io/posts/2"; plain != want {
+		t.Errorf("本文もメタも無いときの形 = %q, want %q", plain, want)
 	}
 }

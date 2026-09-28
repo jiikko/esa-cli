@@ -226,19 +226,27 @@ profile: Profile 3  # 使用する Chrome プロファイル（省略時は auto
   [`github.com/jiikko/dotfiles/src/chromecookie`](https://github.com/jiikko/dotfiles/tree/master/src/chromecookie) が持つ。
   **直すときはあちらを直し**、`go get github.com/jiikko/dotfiles/src/chromecookie@master` で取り込み直す（tag は打たない）。
 
-## Slack にタイトル付きで貼る（`meta -copy`）
+## Slack に記事の紹介を貼る（`meta -copy`）
 
-非公開チームの esa は Slack で URL が展開されない。`esa meta -copy <番号|URL>` は、
-タイトルの文字がリンクになった形（HTML の `<a href=URL>タイトル</a>`）と「タイトル URL」のテキストを
-**同時に**クリップボードへ入れる。Slack のように HTML を受け取る貼り先ではタイトルがリンクになり、
-ターミナルなどテキストしか受け取らない貼り先では「タイトル URL」が貼られる。
+非公開チームの esa は Slack で URL が展開されない。`esa meta -copy <番号|URL>` は、記事の紹介カードを
+HTML とテキストの 2 形式で**同時に**クリップボードへ入れる。Slack のように HTML を受け取る貼り先ではタイトルがリンクになり、
+ターミナルなどテキストしか受け取らない貼り先では最終行に URL が付いた形が貼られる。
+
+```
+📄 TUIアプリはいいぞ                                  ← HTML ではタイトルがリンク
+プロダクト開発部/Tips / @koji_kawaguchi / 2026-09-28   ← カテゴリ / 作成者 / 更新日 / タグ
+> topコマンドみたいやつがTUIアプリと呼ばれているのですが、…   ← 本文の冒頭 120 文字（Markdown の記法は落とす）
+https://<team>.esa.io/posts/33015                     ← テキスト版だけ
+```
 
 ```sh
 esa meta -copy https://<team>.esa.io/posts/28025#comment-1   # # や ? 付きの URL もそのまま渡せる
+esa meta -copy-title 28025                                    # タイトルのリンクだけ（「タイトル URL」）
 ```
 
+- 本文の冒頭はコードブロック・表・HTML・区切り線を飛ばして作る。無い要素（タグ・本文）の行は出さない
 - WIP の記事はタイトルの前に `[WIP] ` が付く。コピーした内容は stdout にも出る
-- `-json` / `-comments` とは併用できない（rc=2）
+- `-copy` と `-copy-title` はどちらか一方だけ。`-json` / `-comments` とは併用できない（rc=2）
 - クリップボードへの書き込みには `osascript` を使う（`pbcopy` はテキストしか入れられないため）
 
 ## スクリプト・自動化から使う

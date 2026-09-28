@@ -25,6 +25,7 @@ func TestCleanupIsWiredIntoProductionPaths(t *testing.T) {
 		why    string
 	}{
 		{"main", "installCleanupOnSignal", "シグナル経路の後始末（層②）が仕掛けられない"},
+		{"main", "sweepStaleCookieDirs", "起動時の残骸の掃除（層③）が資格情報を読まないコマンドで走らない"},
 		{"extractCookies", "sweepStaleCookieDirs", "前回の残骸の掃除（層③）が走らない"},
 	}
 

@@ -3,10 +3,12 @@ module github.com/jiikko/esa-cli
 go 1.25.0
 
 require (
+	github.com/jiikko/dotfiles/src/chromecookie v0.0.0-20260928151137-2923dd58943a
 	golang.org/x/net v0.56.0
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.28.0
 )
+
+require modernc.org/sqlite v1.28.0 // indirect
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

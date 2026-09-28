@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/jiikko/dotfiles/src/chromecookie/chromecookietest"
 )
 
 // プロファイルの失敗の分類（即停止 / 黙って skip / skip + 理由の記録）を、
@@ -38,72 +40,25 @@ func fakeChrome(t *testing.T, keychainErr error) (home string) {
 	return home
 }
 
-func profileDir(home, profile string) string {
-	return filepath.Join(home, "Library", "Application Support", chromeSupportSubdir, profile)
-}
+func profileDir(home, profile string) string { return chromecookietest.ProfileDir(home, profile) }
 
-type fakeCookie struct {
-	host, name, value string
-	enc               []byte
-}
+type fakeCookie = chromecookietest.Cookie
 
 // writeCookieDB は Chrome と同じ列を持つ Cookie DB を profile の Network/Cookies に作る。
 func writeCookieDB(t *testing.T, home, profile string, cookies []fakeCookie) string {
 	t.Helper()
-	return writeCookieDBVersion(t, home, profile, "23", cookies)
+	return chromecookietest.WriteCookieDB(t, home, profile, "23", cookies)
 }
 
-// writeCookieDBVersion は meta.version を指定して Cookie DB を作る（24 以上はホストハッシュ付き）。
-func writeCookieDBVersion(t *testing.T, home, profile, version string, cookies []fakeCookie) string {
-	t.Helper()
-	dir := filepath.Join(profileDir(home, profile), "Network")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, "Cookies")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, q := range []string{
-		`CREATE TABLE meta (key TEXT, value TEXT)`,
-		`INSERT INTO meta VALUES ('version', '` + version + `')`,
-		`CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB)`,
-	} {
-		if _, err := db.Exec(q); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, c := range cookies {
-		if _, err := db.Exec(`INSERT INTO cookies VALUES (?, ?, ?, ?)`, c.host, c.name, c.value, c.enc); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return path
-}
-
+// encWithPassword は password（Keychain の値に相当）で plain を暗号化する（meta.version<24 の形）。
 func encWithPassword(t *testing.T, password, plain string) []byte {
 	t.Helper()
-	key, err := deriveKey([]byte(password))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return encryptForTest(t, key, []byte(plain))
+	return chromecookietest.Encrypt(t, password, plain, "")
 }
 
 func permSkip(err error) bool {
 	var ps *profileSkipError
 	return errors.As(err, &ps) && ps.broken && ps.perm
-}
-
-func encryptForTestPw(t *testing.T, password string, plain []byte) []byte {
-	t.Helper()
-	key, err := deriveKey([]byte(password))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return encryptForTest(t, key, plain)
 }
 
 func brokenSkip(err error) bool {
@@ -116,7 +71,7 @@ func TestProfileFailureClassification(t *testing.T) {
 
 	t.Run("esa 宛ての Cookie が 0 件は黙って skip", func(t *testing.T) {
 		home := fakeChrome(t, nil)
-		writeCookieDB(t, home, "P", []fakeCookie{{host: ".example.com", name: "s", value: "v"}})
+		writeCookieDB(t, home, "P", []fakeCookie{{Host: ".example.com", Name: "s", Value: "v"}})
 		_, err := buildClientForProfile(cfg, "P")
 		if !isProfileSkip(err) || brokenSkip(err) {
 			t.Errorf("Cookie 0 件が「黙って skip」にならない: %T %v", err, err)
@@ -175,8 +130,8 @@ func TestProfileFailureClassification(t *testing.T) {
 	t.Run("復号に全件失敗は skip + 記録（Cookie 0 件に化けない）", func(t *testing.T) {
 		home := fakeChrome(t, nil)
 		writeCookieDB(t, home, "P", []fakeCookie{
-			{host: ".esa.io", name: "_session", enc: encWithPassword(t, "wrongpassword", "secret-a")},
-			{host: ".esa.io", name: "other", enc: encWithPassword(t, "wrongpassword", "secret-b")},
+			{Host: ".esa.io", Name: "_session", Enc: encWithPassword(t, "wrongpassword", "secret-a")},
+			{Host: ".esa.io", Name: "other", Enc: encWithPassword(t, "wrongpassword", "secret-b")},
 		})
 		_, err := buildClientForProfile(cfg, "P")
 		if !brokenSkip(err) || !strings.Contains(err.Error(), "復号") {
@@ -186,17 +141,13 @@ func TestProfileFailureClassification(t *testing.T) {
 
 	t.Run("v24: 鍵違いの長い値が多数件でも全件復号失敗として skip + 記録", func(t *testing.T) {
 		home := fakeChrome(t, nil)
-		wrong, err := deriveKey([]byte("wrongpassword"))
-		if err != nil {
-			t.Fatal(err)
-		}
 		var cs []fakeCookie
-		for i := 0; i < 2000; i++ {
-			cs = append(cs, fakeCookie{host: ".esa.io", name: "c" + strconv.Itoa(i),
-				enc: encryptForTest(t, wrong, v24Plain(".esa.io", strings.Repeat("v", 300)+strconv.Itoa(i)))})
+		for i := range 2000 {
+			cs = append(cs, fakeCookie{Host: ".esa.io", Name: "c" + strconv.Itoa(i),
+				Enc: chromecookietest.Encrypt(t, "wrongpassword", strings.Repeat("v", 300)+strconv.Itoa(i), ".esa.io")})
 		}
-		writeCookieDBVersion(t, home, "P", "24", cs)
-		_, err = buildClientForProfile(cfg, "P")
+		chromecookietest.WriteCookieDB(t, home, "P", "24", cs)
+		_, err := buildClientForProfile(cfg, "P")
 		if !brokenSkip(err) || !strings.Contains(err.Error(), "復号") {
 			t.Errorf("v24 の鍵違い多数件が全件復号失敗にならない: %T %v", err, err)
 		}
@@ -204,8 +155,8 @@ func TestProfileFailureClassification(t *testing.T) {
 
 	t.Run("v24: 正しい鍵・正規のホストハッシュなら通る", func(t *testing.T) {
 		home := fakeChrome(t, nil)
-		writeCookieDBVersion(t, home, "P", "24", []fakeCookie{
-			{host: ".esa.io", name: "_session", enc: encryptForTestPw(t, fakeKeychainPassword, v24Plain(".esa.io", strings.Repeat("s", 300)))},
+		chromecookietest.WriteCookieDB(t, home, "P", "24", []fakeCookie{
+			{Host: ".esa.io", Name: "_session", Enc: chromecookietest.Encrypt(t, fakeKeychainPassword, strings.Repeat("s", 300), ".esa.io")},
 		})
 		c, err := buildClientForProfile(cfg, "P")
 		if err != nil || !strings.Contains(c.cookieHeader, "_session="+strings.Repeat("s", 300)) {
@@ -216,8 +167,8 @@ func TestProfileFailureClassification(t *testing.T) {
 	t.Run("1 件だけの復号失敗は続行する", func(t *testing.T) {
 		home := fakeChrome(t, nil)
 		writeCookieDB(t, home, "P", []fakeCookie{
-			{host: ".esa.io", name: "bad", enc: encWithPassword(t, "wrongpassword", "x")},
-			{host: ".esa.io", name: "_session", enc: encWithPassword(t, fakeKeychainPassword, "good")},
+			{Host: ".esa.io", Name: "bad", Enc: encWithPassword(t, "wrongpassword", "x")},
+			{Host: ".esa.io", Name: "_session", Enc: encWithPassword(t, fakeKeychainPassword, "good")},
 		})
 		c, err := buildClientForProfile(cfg, "P")
 		if err != nil || !strings.Contains(c.cookieHeader, "_session=good") {
@@ -242,9 +193,12 @@ func TestProfileFailureClassification(t *testing.T) {
 		}
 	})
 
-	t.Run("-wal が読めない（権限）なら skip + 記録（WAL の Cookie を黙って落とさない）", func(t *testing.T) {
+	// 🚨 -wal / -shm の読み取り失敗は黙って捨てない。ただし本体の DB に esa 宛ての Cookie があれば
+	// それで続行する（認証は authOK が確かめる）。無かったときだけ理由を記録して skip する
+	// （chromecookie の Result.Diagnose。slack-cli / newrelic-nrql-cli と同じ扱い）。
+	t.Run("-wal が読めず esa 宛ての Cookie も無いなら skip + 記録（perm）", func(t *testing.T) {
 		home := fakeChrome(t, nil)
-		path := writeCookieDB(t, home, "P", []fakeCookie{{host: ".esa.io", name: "_session", value: "v"}})
+		path := writeCookieDB(t, home, "P", []fakeCookie{{Host: ".example.com", Name: "s", Value: "v"}})
 		if err := os.WriteFile(path+"-wal", []byte("wal"), 0o000); err != nil {
 			t.Fatal(err)
 		}
@@ -252,26 +206,26 @@ func TestProfileFailureClassification(t *testing.T) {
 			t.Skip("権限 000 のファイルが読めてしまう環境（root 等）なので判定できない")
 		}
 		_, err := buildClientForProfile(cfg, "P")
-		if !permSkip(err) {
-			t.Errorf("-wal の権限エラーを skip + 記録（perm）にしていない: %T %v", err, err)
+		if !brokenSkip(err) || !strings.Contains(err.Error(), "Cookies-wal") {
+			t.Errorf("-wal を読めなかったことを skip + 記録にしていない（「Cookie が無い」に化けた）: %T %v", err, err)
 		}
 	})
 
-	t.Run("-wal の ENOENT 以外の読み取り失敗も skip + 記録（黙って 0 件にしない）", func(t *testing.T) {
+	t.Run("-wal が読めなくても本体に esa 宛ての Cookie があれば続行", func(t *testing.T) {
 		home := fakeChrome(t, nil)
-		path := writeCookieDB(t, home, "P", []fakeCookie{{host: ".esa.io", name: "_session", value: "v"}})
+		path := writeCookieDB(t, home, "P", []fakeCookie{{Host: ".esa.io", Name: "_session", Value: "v"}})
 		if err := os.Mkdir(path+"-wal", 0o700); err != nil { // ReadFile はディレクトリで EISDIR 系のエラー
 			t.Fatal(err)
 		}
-		_, err := buildClientForProfile(cfg, "P")
-		if !brokenSkip(err) || permSkip(err) {
-			t.Errorf("-wal の読み取り失敗を skip + 記録（非 perm）にしていない: %T %v", err, err)
+		c, err := buildClientForProfile(cfg, "P")
+		if err != nil || !strings.Contains(c.cookieHeader, "_session=v") {
+			t.Errorf("取れた Cookie があるのに止めた: err=%v", err)
 		}
 	})
 
 	t.Run("-wal / -shm が無いのは従来どおり続行", func(t *testing.T) {
 		home := fakeChrome(t, nil)
-		writeCookieDB(t, home, "P", []fakeCookie{{host: ".esa.io", name: "_session", value: "v"}})
+		writeCookieDB(t, home, "P", []fakeCookie{{Host: ".esa.io", Name: "_session", Value: "v"}})
 		if _, err := buildClientForProfile(cfg, "P"); err != nil {
 			t.Errorf("-wal / -shm 無しで失敗した: %v", err)
 		}
@@ -286,7 +240,7 @@ func TestAutoDetectRecordsBrokenProfilesThroughRealBuild(t *testing.T) {
 	dir := filepath.Join(profileDir(home, "Broken"), "Network")
 	_ = os.MkdirAll(dir, 0o700)
 	_ = os.WriteFile(filepath.Join(dir, "Cookies"), []byte(strings.Repeat("garbage ", 200)), 0o600)
-	writeCookieDB(t, home, "Undecryptable", []fakeCookie{{host: ".esa.io", name: "_session", enc: encWithPassword(t, "wrongpassword", "x")}})
+	writeCookieDB(t, home, "Undecryptable", []fakeCookie{{Host: ".esa.io", Name: "_session", Enc: encWithPassword(t, "wrongpassword", "x")}})
 
 	origScan := listScanProfiles
 	t.Cleanup(func() { listScanProfiles = origScan })
@@ -414,7 +368,7 @@ func resetFileConfig(t *testing.T) string {
 // makeUnreadableProfile は Cookie DB を持つがディレクトリの権限で読めないプロファイルを作る。
 func makeUnreadableProfile(t *testing.T, home, profile string) {
 	t.Helper()
-	writeCookieDB(t, home, profile, []fakeCookie{{host: ".esa.io", name: "_session", value: "v"}})
+	writeCookieDB(t, home, profile, []fakeCookie{{Host: ".esa.io", Name: "_session", Value: "v"}})
 	pd := profileDir(home, profile)
 	if err := os.Chmod(pd, 0o000); err != nil {
 		t.Fatal(err)

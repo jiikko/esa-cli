@@ -218,6 +218,9 @@ profile: Profile 3  # 使用する Chrome プロファイル（省略時は auto
   未設定時は内部エンドポイントの検索 HTML から記事番号を取り、各記事 JSON で詳細を補完する。
   `show` / `meta` / `revisions` は常に Cookie を使う（`.md` 取得は内部エンドポイントの利点）。
 - 取得内容はチーム内の非公開情報。外部サービスへの貼り付け・保存に注意。
+- Chrome の Cookie の復号・一時コピーの後始末・プロファイルの列挙は、slack-cli / newrelic-nrql-cli と共有する
+  [`github.com/jiikko/dotfiles/src/chromecookie`](https://github.com/jiikko/dotfiles/tree/master/src/chromecookie) が持つ。
+  **直すときはあちらを直し**、`go get github.com/jiikko/dotfiles/src/chromecookie@master` で取り込み直す（tag は打たない）。
 
 ## Slack にタイトル付きで貼る（`meta -copy`）
 

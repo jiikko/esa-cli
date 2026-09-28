@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -350,20 +349,20 @@ func TestAutoDetectEnvironmentErrorIsNotSwallowed(t *testing.T) {
 
 // 実物の分類: Cookie DB が無いのは黙って skip、読めない（権限）のは skip + 記録（perm）。
 func TestCookieErrorsClassification(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	if _, err := cookieDBSourcePath("NoSuchProfile"); !isProfileSkip(err) {
-		t.Errorf("Cookie DB が無いのに skip 扱いにならない: %v", err)
+	home := fakeChrome(t, nil)
+	if _, err := extractCookies("NoSuchProfile"); !isProfileSkip(err) || brokenSkip(err) || !strings.Contains(err.Error(), "ESA_CHROME_PROFILE") {
+		t.Errorf("Cookie DB が無いのに「黙って skip」（esa のフラグ名付き）にならない: %v", err)
 	}
 
-	t.Setenv("TMPDIR", t.TempDir())
-	src := filepath.Join(t.TempDir(), "Cookies")
-	if err := os.WriteFile(src, []byte("x"), 0o000); err != nil {
+	path := writeCookieDB(t, home, "P", nil)
+	if err := os.Chmod(path, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.ReadFile(src); err == nil {
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	if _, err := os.ReadFile(path); err == nil {
 		t.Skip("権限 000 のファイルが読めてしまう環境（root 等）なので判定できない")
 	}
-	_, _, err := copyCookieDB("P", src)
+	_, err := extractCookies("P")
 	var ps *profileSkipError
 	if !errors.As(err, &ps) || !ps.broken || !ps.perm || !strings.Contains(err.Error(), `"P"`) {
 		t.Errorf("権限エラーをプロファイル名付きの skip + 記録（perm）にしていない: %v", err)

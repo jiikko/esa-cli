@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/jiikko/dotfiles/src/chromecookie"
 )
 
 // profileAuto は「ログイン済みプロファイルを自動検出する」ことを示す予約値。
@@ -82,20 +83,19 @@ const permissionHint = "\n  アクセス拒否で読めないプロファイル�
 // buildClientForProfile は指定プロファイルの Cookie でクライアントを構築する。
 // esa 宛て Cookie が無い場合は *profileSkipError（自動検出時は次の候補へ進むために使う）。
 func buildClientForProfile(cfg config, profile string) (*client, error) {
-	cookies, err := extractCookiesForProfile(profile)
+	res, err := extractCookies(profile)
 	if err != nil {
 		return nil, err
 	}
-	header, n := buildCookieHeader(cookies, cfg.teamHost())
+	header, n := buildCookieHeader(res.Cookies, cfg.teamHost())
 	if n == 0 {
+		// 🚨 「Cookie が無い」に化けさせない: 全件の復号失敗（鍵違い）・-wal を読めない、は理由を記録して skip。
+		if derr := res.Diagnose(fmt.Sprintf("%s 宛ての Cookie ", cfg.teamHost())); derr != nil {
+			return nil, classifyReadError(profile, derr)
+		}
 		return nil, &profileSkipError{msg: fmt.Sprintf("%s 宛ての Cookie がプロファイル %q にありません", cfg.teamHost(), profile)}
 	}
 	return newClient(cfg.teamHost(), header), nil
-}
-
-// extractCookiesForProfile は extractCookies の薄いラッパー（意図を明示するため）。
-func extractCookiesForProfile(profile string) ([]cookieEntry, error) {
-	return extractCookies(profile)
 }
 
 // テストの差し替え口（seam）。production では常に実体を指す。
@@ -242,66 +242,14 @@ func resolveProfileClient(cfg config) (string, *client, error) {
 		cfg.teamHost(), chromeName, chromeName, cfg.teamHost(), skipped.suffix())
 }
 
-// listChromeProfiles は Local State からプロファイルのディレクトリ名を列挙する。
-// 読み取れない場合は既定的な候補（Default / Profile N）にフォールバックする。
+// listChromeProfiles は Local State からプロファイルのディレクトリ名を列挙する（直近に使ったものが先頭）。
+// 読み取れない場合は実在するディレクトリ（Default / Profile N）にフォールバックする（chromecookie.ListProfiles）。
 func listChromeProfiles() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return []string{"Default"}
+	ps := chromecookie.ListProfiles()
+	out := make([]string, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, p.Dir)
 	}
-	lsPath := filepath.Join(home, "Library", "Application Support", chromeSupportSubdir, "Local State")
-	data, err := os.ReadFile(lsPath)
-	if err != nil {
-		return fallbackProfiles(home)
-	}
-	// info_cache のキー（プロファイルのディレクトリ名）だけを取り出す。暗号鍵等は読まない。
-	var ls struct {
-		Profile struct {
-			InfoCache map[string]json.RawMessage `json:"info_cache"`
-			LastUsed  string                     `json:"last_used"`
-		} `json:"profile"`
-	}
-	if err := json.Unmarshal(data, &ls); err != nil || len(ls.Profile.InfoCache) == 0 {
-		return fallbackProfiles(home)
-	}
-	profiles := make([]string, 0, len(ls.Profile.InfoCache))
-	for dir := range ls.Profile.InfoCache {
-		profiles = append(profiles, dir)
-	}
-	sort.Strings(profiles)
-	// 直近に使われたプロファイルを先頭へ寄せる（検出を速くする）。
-	if lu := ls.Profile.LastUsed; lu != "" {
-		for i, p := range profiles {
-			if p == lu {
-				profiles = append([]string{p}, append(profiles[:i:i], profiles[i+1:]...)...)
-				break
-			}
-		}
-	}
-	return profiles
-}
-
-// fallbackProfiles は Local State が読めないときに、実在するディレクトリを走査する。
-func fallbackProfiles(home string) []string {
-	base := filepath.Join(home, "Library", "Application Support", chromeSupportSubdir)
-	entries, err := os.ReadDir(base)
-	if err != nil {
-		return []string{"Default"}
-	}
-	var out []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if name == "Default" || strings.HasPrefix(name, "Profile ") {
-			out = append(out, name)
-		}
-	}
-	if len(out) == 0 {
-		return []string{"Default"}
-	}
-	sort.Strings(out)
 	return out
 }
 
@@ -399,46 +347,13 @@ type profileInfo struct {
 	email string // ログイン中 Google アカウント（user_name。esa ログインとは限らない点に注意）
 }
 
-// listProfileInfos は Local State からプロファイルとメール/表示名を取得する。
+// listProfileInfos は Local State からプロファイルとメール/表示名を取得する（ディレクトリ名順）。
 // 読めない場合はディレクトリ名のみ（メール空）で返す。
 func listProfileInfos() []profileInfo {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	lsPath := filepath.Join(home, "Library", "Application Support", chromeSupportSubdir, "Local State")
-	data, err := os.ReadFile(lsPath)
-	if err != nil {
-		// フォールバック: ディレクトリ名のみ
-		var out []profileInfo
-		for _, d := range fallbackProfiles(home) {
-			out = append(out, profileInfo{dir: d})
-		}
-		return out
-	}
-	var ls struct {
-		Profile struct {
-			InfoCache map[string]struct {
-				Name     string `json:"name"`
-				UserName string `json:"user_name"`
-				GaiaName string `json:"gaia_name"`
-			} `json:"info_cache"`
-		} `json:"profile"`
-	}
-	if err := json.Unmarshal(data, &ls); err != nil || len(ls.Profile.InfoCache) == 0 {
-		var out []profileInfo
-		for _, d := range fallbackProfiles(home) {
-			out = append(out, profileInfo{dir: d})
-		}
-		return out
-	}
-	out := make([]profileInfo, 0, len(ls.Profile.InfoCache))
-	for dir, info := range ls.Profile.InfoCache {
-		email := info.UserName
-		if email == "" {
-			email = info.GaiaName
-		}
-		out = append(out, profileInfo{dir: dir, name: info.Name, email: email})
+	ps := chromecookie.ListProfiles()
+	out := make([]profileInfo, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, profileInfo{dir: p.Dir, name: p.Name, email: p.Email})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].dir < out[j].dir })
 	return out

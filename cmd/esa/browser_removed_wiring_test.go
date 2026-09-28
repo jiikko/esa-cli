@@ -56,8 +56,8 @@ func TestBrowserSelectionIsAbsentFromProductionSource(t *testing.T) {
 
 	// canary: 走査が実際にソースを読めていることを、必ず在るものが見つかることで確かめる。
 	// 抽出が 0 件なら「違反 0 件」も自動的に成立してしまう（緑の空振り）。
-	if !idents["chromeSupportSubdir"] {
-		t.Fatalf("canary: chromeSupportSubdir が見つからない（走査が空振りしている。"+
+	if !idents["chromeName"] {
+		t.Fatalf("canary: chromeName が見つからない（走査が空振りしている。"+
 			"識別子 %d 個 / 文字列 %d 個しか拾えていない）", len(idents), len(strs))
 	}
 	if !strs["ESA_CHROME_PROFILE"] {

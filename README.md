@@ -218,6 +218,10 @@ profile: Profile 3  # 使用する Chrome プロファイル（省略時は auto
   未設定時は内部エンドポイントの検索 HTML から記事番号を取り、各記事 JSON で詳細を補完する。
   `show` / `meta` / `revisions` は常に Cookie を使う（`.md` 取得は内部エンドポイントの利点）。
 - 取得内容はチーム内の非公開情報。外部サービスへの貼り付け・保存に注意。
+- Cookie DB は作業領域（`~/Library/Caches/esa-cli/extract`、0700）へコピーしてから読み、そのコピーは
+  ①正常終了・エラー ②シグナル（Ctrl-C 等）③次回起動時の掃除（`kill -9` 等で残ったもの）の 3 経路で削除する。
+  作業領域がシンボリックリンク・他人の所有・group / other に権限がある状態なら使わずに止める（v0.1.5 から。以前は `$TMPDIR/esa-cookie`）。
+- `-wal` / `-shm` を読めなくても、本体の Cookie DB に esa の Cookie があればそれを使う。無いときは読めなかったことを理由として添えて次のプロファイルへ進む（v0.1.5 から）。
 - Chrome の Cookie の復号・一時コピーの後始末・プロファイルの列挙は、slack-cli / newrelic-nrql-cli と共有する
   [`github.com/jiikko/dotfiles/src/chromecookie`](https://github.com/jiikko/dotfiles/tree/master/src/chromecookie) が持つ。
   **直すときはあちらを直し**、`go get github.com/jiikko/dotfiles/src/chromecookie@master` で取り込み直す（tag は打たない）。

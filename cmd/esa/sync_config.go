@@ -85,25 +85,34 @@ func parseSyncConfig(data []byte) ([]syncTarget, error) {
 			return nil, errors.New("文書が複数あります（--- で区切らず、1 つの targets: にまとめてください）")
 		}
 	}
+	if err := validateSyncTargets(cfg.Targets); err != nil {
+		return nil, err
+	}
+	return cfg.Targets, nil
+}
+
+// validateSyncTargets は対象の一覧を検証する（各項目と、対象どうしの名前・dir の重なり）。カテゴリはその場で正規化する。
+// sync が読むときと、esa sync add が保存の前に確かめるときの両方がこれを通る（検証を 2 つに分けない）。
+func validateSyncTargets(targets []syncTarget) error {
 	seen := map[string]bool{}
 	dirs := map[string]string{} // 展開後の dir → name
-	for i := range cfg.Targets {
-		t := &cfg.Targets[i]
+	for i := range targets {
+		t := &targets[i]
 		t.Category = normalizeCategory(t.Category)
 		if err := validateSyncTarget(*t, seen); err != nil {
-			return nil, fmt.Errorf("targets[%d]: %w", i, err)
+			return fmt.Errorf("targets[%d]: %w", i, err)
 		}
 		seen[t.Name] = true
 		// dir が同じか入れ子の 2 対象は、互いの書いたファイルを上書きしうるうえ、dry-run の差分も実際の結果と食い違う。
 		dir, _ := expandDir(t.Dir)
 		for other, name := range dirs {
 			if key, okey := syncPathKey(dir), syncPathKey(other); key == okey || strings.HasPrefix(key, okey+"/") || strings.HasPrefix(okey, key+"/") {
-				return nil, fmt.Errorf("targets[%d]: dir %s が %q の dir %s と同じか入れ子です（別々のディレクトリにしてください）", i, dir, name, other)
+				return fmt.Errorf("targets[%d]: dir %s が %q の dir %s と同じか入れ子です（別々のディレクトリにしてください）", i, dir, name, other)
 			}
 		}
 		dirs[dir] = t.Name
 	}
-	return cfg.Targets, nil
+	return nil
 }
 
 func isEmptyYAMLDoc(n *yaml.Node) bool {

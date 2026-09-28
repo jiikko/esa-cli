@@ -25,6 +25,7 @@ const syncHelp = `esa sync - esa のカテゴリ配下の記事を、ローカ�
                                    dry-run の後に esa 側が変わっていれば、変わった内容が書かれる）
   esa sync add                     対象を対話式で追加する（esa sync add --help）
   esa sync list                    登録済みの対象を一覧する
+  esa sync help                    このヘルプ
 
   名前を省くと全対象。フラグは名前の前後どちらに書いてもよい。
 
@@ -42,6 +43,10 @@ const syncHelp = `esa sync - esa のカテゴリ配下の記事を、ローカ�
   - 書くのは esa 側にある記事のファイルだけ。esa で消した記事のファイルは消さない
   - ローカルで編集したファイルも上書きする（dry-run の差分に出るので、先に確認すること）。
     差分を表示してから書くまでの間にローカルが変わったら、そのファイルは書かずにエラーにする
+    （書く直前の読み直しから置き換えまでの一瞬の編集だけは防げない）
+  - 同じ dir への --apply は同時に 1 本だけ（2 本目はエラー）。中断で残った一時ファイル（*.esa-sync-tmp）は
+    dry-run で知らせ、次の --apply で消す。見るのは今回書き出す記事のファイルの分だけで、中断の後に esa で
+    改名・削除した記事の一時ファイルは残る（手で消してよい）
   - 書き出し先がシンボリックリンク・ディレクトリなら、その対象は 1 件も書かずにエラーにする
   - dir の外へ出るパス（.. 等）になる記事があれば、その対象は 1 件も書かずにエラーにする
   - 大文字小文字・Unicode の正規化だけが違う 2 記事（Foo と foo 等）は同じファイルとみなしてエラーにする
@@ -70,6 +75,9 @@ func cmdSync(args []string) error {
 			return syncAdd(args[1:])
 		case "list":
 			return syncList(args[1:])
+		case "help": // esa config help と揃える（help は対象の名前に使えない予約名）
+			fmt.Fprint(os.Stdout, syncHelp)
+			return nil
 		}
 	}
 	var cfg config
@@ -188,6 +196,15 @@ func runSyncTarget(c *client, t syncTarget, apply bool, w io.Writer) (int, error
 	}
 	fmt.Fprintf(w, "[%s] %s → %s\n", t.Name, t.Category, dir)
 
+	// 計画から書き込みまでを、同じ dir への他の --apply と排他にする（dry-run は書かないので取らない）。
+	if apply {
+		lock, err := acquireSyncLock(dir)
+		if err != nil {
+			return 0, err
+		}
+		defer lock.release()
+	}
+
 	files, excluded, err := c.collectSyncFiles(t.Category)
 	if err != nil {
 		return 0, err
@@ -212,11 +229,17 @@ func runSyncTarget(c *client, t syncTarget, apply bool, w io.Writer) (int, error
 	}
 	var plan []planned
 	var problems []string
+	var leftovers []string // 前回中断したときの一時ファイル（計画に載っているファイルの分だけを見る。走査はしない）
 	for _, f := range files {
 		old, exists, err := readSyncDest(root, f.rel)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", visible(f.rel), err))
 			continue
+		}
+		if root != nil {
+			if _, err := root.Lstat(filepath.FromSlash(f.rel) + syncTmpSuffix); err == nil {
+				leftovers = append(leftovers, f.rel+syncTmpSuffix)
+			}
 		}
 		st := syncSame
 		switch {
@@ -259,7 +282,22 @@ func runSyncTarget(c *client, t syncTarget, apply bool, w io.Writer) (int, error
 	}
 	fmt.Fprintf(w, "  記事 %d 件: 新規 %d / 変更 %d / 変更なし %d\n", len(plan), nNew, nChanged, nSame)
 	if !apply {
+		if len(leftovers) > 0 {
+			fmt.Fprintf(w, "  注意: 前回中断したとき（か、いま別の --apply が書いている）一時ファイルが %d 件あります（--apply で消します）: %s\n",
+				len(leftovers), visible(strings.Join(leftovers, ", ")))
+		}
 		return nNew + nChanged, nil
+	}
+
+	// 🚨 ロックの下なので、計画に載っているファイルの一時ファイルは前回の自分の残骸と決まる（並行する他の
+	// --apply のものではない）。変更なしのファイルの分も消す（消さないと、そのファイルが変わるまで残り続ける）。
+	for _, l := range leftovers {
+		if err := root.Remove(filepath.FromSlash(l)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return 0, fmt.Errorf("前回の一時ファイル %s を消せません: %w", visible(l), err)
+		}
+	}
+	if len(leftovers) > 0 {
+		fmt.Fprintf(w, "  前回中断したときの一時ファイルを %d 件消しました\n", len(leftovers))
 	}
 
 	written := 0
@@ -467,7 +505,7 @@ func syncRelPath(root, category, name string) (rel string, inside bool, err erro
 		return "", true, fmt.Errorf("記事名 %q に / が含まれています", visible(name))
 	}
 	file := name
-	if !strings.HasSuffix(file, ".md") {
+	if !strings.HasSuffix(strings.ToLower(file), ".md") { // SKILL.MD を SKILL.MD.md にしない
 		file += ".md"
 	}
 	parts = append(parts, file)
@@ -553,8 +591,15 @@ const syncTmpSuffix = ".esa-sync-tmp"
 //
 // 🚨 置き換える直前に書き出し先を読み直し、計画のとき（差分を表示したとき）の内容と一致しなければ書かない。
 // 一致を見ずに書くと、計画から書き込みまでの間の手編集が、差分に一度も出ないまま消える。
+//
+// 読み直しから rename までの間（比較 1 回ぶん）の手編集は防げない（比較と置き換えを不可分にする手段が無い）。
+// 呼び出し側は acquireSyncLock を持っていること（一時ファイルの名前を他のプロセスと共有しないため）。
 func writeSyncFile(root *os.Root, f syncFile, expected string, expectExists bool) error {
 	name := filepath.FromSlash(f.rel)
+	// 書く前にも 1 度確かめる（ディレクトリを作ってから食い違いに気づくと、空のディレクトリが残る）。
+	if err := checkSyncDestUnchanged(root, f.rel, expected, expectExists); err != nil {
+		return err
+	}
 	if d := filepath.Dir(name); d != "." {
 		if err := root.MkdirAll(d, 0o755); err != nil {
 			return err
@@ -568,6 +613,7 @@ func writeSyncFile(root *os.Root, f syncFile, expected string, expectExists bool
 		perm = fi.Mode().Perm()
 	}
 	// 前回中断したときの一時ファイルが残っていれば消してから作る（O_EXCL なので残っていると毎回失敗する）。
+	// ロックの下なので、残っているのは前回の自分の残骸。
 	// O_TRUNC で開き直さないのは、一時ファイルの名前がリンクだった場合に、リンク先を書き換えないため。
 	tmp := name + syncTmpSuffix
 	if err := root.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -585,13 +631,7 @@ func writeSyncFile(root *os.Root, f syncFile, expected string, expectExists bool
 		werr = cerr
 	}
 	if werr == nil {
-		cur, exists, err := readSyncDest(root, f.rel)
-		switch {
-		case err != nil:
-			werr = err
-		case exists != expectExists || cur != expected:
-			werr = errors.New("差分を表示した後に書き出し先が変わりました。もう一度差分を確認してください")
-		}
+		werr = checkSyncDestUnchanged(root, f.rel, expected, expectExists)
 	}
 	if werr == nil {
 		werr = root.Rename(tmp, name)
@@ -600,6 +640,18 @@ func writeSyncFile(root *os.Root, f syncFile, expected string, expectExists bool
 		_ = root.Remove(tmp)
 	}
 	return werr
+}
+
+// checkSyncDestUnchanged は書き出し先が計画のとき（差分を表示したとき）のままかを確かめる。
+func checkSyncDestUnchanged(root *os.Root, rel, expected string, expectExists bool) error {
+	cur, exists, err := readSyncDest(root, rel)
+	if err != nil {
+		return err
+	}
+	if exists != expectExists || cur != expected {
+		return errors.New("差分を表示した後に書き出し先が変わりました。もう一度差分を確認してください")
+	}
+	return nil
 }
 
 // syncNewFileShow は新規ファイルの本文を表示する行数の上限（先頭と末尾それぞれ）。

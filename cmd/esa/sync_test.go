@@ -127,8 +127,12 @@ func readFile(t *testing.T, path string) string {
 }
 
 // runSync は 1 対象を実行し、書き込み（予定）件数・出力・エラーを返す。
+// --apply のロックは設定ディレクトリに置かれるので、本物の ~/.config に書かないよう隔離する。
 func runSync(t *testing.T, srv *httptest.Server, tg syncTarget, apply bool) (int, string, error) {
 	t.Helper()
+	if os.Getenv("XDG_CONFIG_HOME") == "" || !strings.HasPrefix(os.Getenv("XDG_CONFIG_HOME"), os.TempDir()) {
+		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	}
 	var out strings.Builder
 	n, err := runSyncTarget(testClient(srv.URL), tg, apply, &out)
 	return n, out.String(), err
@@ -386,6 +390,7 @@ func TestSyncRelPath(t *testing.T) {
 		{"R", "R", "README", "README.md", true, false},
 		{"R", "R/a/b", "SKILL", "a/b/SKILL.md", true, false},
 		{"R", "R", "x.md", "x.md", true, false},
+		{"R", "R", "SKILL.MD", "SKILL.MD", true, false}, // 大文字の .MD に .md を足さない
 		{"R", "R2", "x", "", false, false},
 		{"R", "Other/R", "x", "", false, false},
 		{"R", "R", "a/b", "", true, true},
@@ -496,12 +501,23 @@ func TestParseCategoryInput(t *testing.T) {
 	cases := map[string]string{
 		"https://myteam.esa.io/#path=%2FUsers%2Fme%2Flocal":        "Users/me/local",
 		"https://myteam.esa.io/#path=%2F%E6%97%A5%E5%A0%B1%2F&x=1": "日報",
-		" /Users/me/skills/ ": "Users/me/skills",
-		"Users/me":            "Users/me",
+		"https://myteam.esa.io/#path=%2Fa+b%2F100%25":              "a+b/100%", // + を空白にしない / %25 は 1 回だけ戻す
+		" /Users/me/skills/ ":                                      "Users/me/skills",
+		"Users/me":                                                 "Users/me",
 	}
 	for in, want := range cases {
-		if got := parseCategoryInput(in); got != want {
-			t.Errorf("parseCategoryInput(%q) = %q, want %q", in, got, want)
+		if got, err := parseCategoryInput(in, "myteam"); err != nil || got != want {
+			t.Errorf("parseCategoryInput(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	// カテゴリの URL でないもの・チームの違う URL は、黙って保存せず使い方エラーにする
+	var ue *usageError
+	for in, want := range map[string]string{
+		"https://myteam.esa.io/posts/123":          "カテゴリの URL ではありません",
+		"https://other.esa.io/#path=%2FUsers%2Fme": "設定中のチーム",
+	} {
+		if _, err := parseCategoryInput(in, "myteam"); !errors.As(err, &ue) || !strings.Contains(err.Error(), want) {
+			t.Errorf("parseCategoryInput(%q) を使い方エラー（%s）にしていない: %v", in, want, err)
 		}
 	}
 	if got := defaultSyncName("Users/me/local"); got != "local" {
@@ -634,6 +650,19 @@ func TestWriteSyncFileRefusesWhenDestinationChangedSincePlan(t *testing.T) {
 	f := syncFile{rel: "a.md", body: "esa の本文\n"}
 	if err := writeSyncFile(root, f, "計画のときの内容\n", true); err == nil {
 		t.Fatal("計画の後に変わった書き出し先を上書きした")
+	}
+	// 食い違いに気づく前にディレクトリを作らないこと（空のディレクトリを残さない）
+	if err := os.MkdirAll(filepath.Join(dir, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "d", "x.md"), []byte("後から\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSyncFile(root, syncFile{rel: "n/e/w.md", body: "x\n"}, "", true); err == nil {
+		t.Fatal("計画のときは在ったファイルが無いのに書いた")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "n")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("食い違いで止まったのにディレクトリを作った: %v", err)
 	}
 	if got := readFile(t, dst); got != "計画の後の手編集\n" {
 		t.Errorf("書き出し先を書き換えた: %q", got)
@@ -829,5 +858,131 @@ func TestNewFileSummaryIsBounded(t *testing.T) {
 	}
 	if short := newFileSummary("a\nb\n", "esa #1"); !strings.Contains(short, "+a\n+b\n") || strings.Contains(short, "略") {
 		t.Errorf("短い本文を全行出していない: %q", short)
+	}
+}
+
+// 同じ dir への --apply は同時に 1 本だけ（2 本目は何も書かずにエラー）。ロックを外せば次が取れること。
+func TestSyncApplyIsExclusivePerDirectory(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := filepath.Join(t.TempDir(), "out")
+	l1, err := acquireSyncLock(dir)
+	if err != nil {
+		t.Fatalf("1 本目のロックを取れない: %v", err)
+	}
+	// 大文字小文字だけ違うパスも同じディレクトリ（APFS）なので同じロック
+	if _, err := acquireSyncLock(filepath.Join(filepath.Dir(dir), "OUT")); err == nil || !strings.Contains(err.Error(), "書き込み中") {
+		t.Fatalf("同じ dir の 2 本目を拒否していない: %v", err)
+	}
+	f := &fakeEsa{perPage: 10, posts: map[int]map[string]any{1: post(1, "C", "a", "x")}}
+	if _, _, err := runSync(t, f.serve(t), syncTarget{Name: "c", Category: "C", Dir: dir}, true); err == nil {
+		t.Fatal("ロック中の dir に --apply が書いた")
+	}
+	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ロックで止まったのに書き出し先を作った/書いた: %v", err)
+	}
+	if n, _, err := runSync(t, f.serve(t), syncTarget{Name: "c", Category: "C", Dir: dir}, false); err != nil || n != 1 {
+		t.Errorf("dry-run はロックを取らずに動くはず: n=%d %v", n, err)
+	}
+	l1.release()
+	if _, _, err := runSync(t, f.serve(t), syncTarget{Name: "c", Category: "C", Dir: dir}, true); err != nil {
+		t.Fatalf("ロックを外した後の --apply が失敗: %v", err)
+	}
+	if got := readFile(t, filepath.Join(dir, "a.md")); got != "x\n" {
+		t.Errorf("書かれていない: %q", got)
+	}
+}
+
+// 中断で残った一時ファイルは、dry-run で知らせ、--apply で消すこと（変更なしのファイルの分も）。
+// 計画に載っていないファイルの一時ファイルには触れないこと（走査して消さない）。
+func TestSyncCleansLeftoverTempFilesOfPlannedFiles(t *testing.T) {
+	f := &fakeEsa{perPage: 10, posts: map[int]map[string]any{1: post(1, "C", "a", "same")}}
+	srv := f.serve(t)
+	dir := t.TempDir()
+	for name, body := range map[string]string{"a.md": "same\n", "a.md" + syncTmpSuffix: "中断の残骸", "other.md" + syncTmpSuffix: "計画外"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tg := syncTarget{Name: "c", Category: "C", Dir: dir}
+	n, out, err := runSync(t, srv, tg, false)
+	if err != nil || n != 0 || !strings.Contains(out, "一時ファイルが 1 件あります") {
+		t.Fatalf("dry-run で残骸を知らせていない: n=%d %v\n%s", n, err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.md"+syncTmpSuffix)); err != nil {
+		t.Fatalf("dry-run で残骸を消した: %v", err)
+	}
+	if _, out, err = runSync(t, srv, tg, true); err != nil || !strings.Contains(out, "1 件消しました") {
+		t.Fatalf("--apply で残骸を消していない: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.md"+syncTmpSuffix)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("変更なしのファイルの残骸が残った: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "other.md"+syncTmpSuffix)); err != nil {
+		t.Errorf("計画に無いファイルの一時ファイルを消した: %v", err)
+	}
+}
+
+// ウィザードの入力の誤り（dir の重なり・記事の URL）は、esa に問い合わせる前に使い方エラーで止め、何も保存しないこと。
+func TestSyncAddRejectsBadInputBeforeQueryingEsa(t *testing.T) {
+	f := &fakeEsa{perPage: 10, posts: map[int]map[string]any{1: post(1, "C", "a", "x")}}
+	srv := f.serve(t)
+	installFakeProfiles(t, []string{"P"}, map[string]fakeProfile{"P": {url: srv.URL}})
+	t.Setenv("HOME", t.TempDir())
+	path, _ := syncConfigPath()
+	if err := appendSyncTarget(path, syncTarget{Name: "skills", Category: "C", Dir: "~/.claude/skills"}); err != nil {
+		t.Fatal(err)
+	}
+	before := readFile(t, path)
+	for name, args := range map[string][]string{
+		"入れ子の dir":  {"-category", "D", "-dir", "~/.claude/skills/sub", "-name", "sub"},
+		"同じ dir":    {"-category", "D", "-dir", "~/.claude/skills/", "-name", "other"},
+		"記事の URL":   {"-category", "https://t.esa.io/posts/123", "-dir", "/x"},
+		"別チームの URL": {"-category", "https://other.esa.io/#path=%2FC", "-dir", "/x"},
+	} {
+		f.queries = nil
+		withEmptyStdin(t)
+		var err error
+		captureStdio(t, func() { err = syncAdd(append([]string{"-team", "t", "-profile", "P"}, args...)) })
+		var ue *usageError
+		if !errors.As(err, &ue) {
+			t.Errorf("%s: 使い方エラー（rc=2）にしていない: %v", name, err)
+		}
+		if len(f.queries) != 0 {
+			t.Errorf("%s: 拒否する前に esa へ問い合わせた（検索 %d 回）", name, len(f.queries))
+		}
+		if readFile(t, path) != before {
+			t.Errorf("%s: 拒否したのに sync.yml を書き換えた", name)
+		}
+	}
+}
+
+// esa sync help / esa sync add help はヘルプを stdout へ出すこと（esa config help と揃える）。
+func TestSyncHelpSubcommand(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, tc := range []struct {
+		run  func() error
+		want string
+	}{
+		{func() error { return cmdSync([]string{"help"}) }, syncHelp},
+		{func() error { return syncAdd([]string{"help"}) }, syncAddHelp},
+	} {
+		var err error
+		stdout, stderr := captureStdio(t, func() { err = tc.run() })
+		if err != nil || stdout != tc.want || stderr != "" {
+			t.Errorf("help が stdout に出ていない: err=%v stderr=%q stdout 先頭=%q", err, stderr, stdout[:min(len(stdout), 40)])
+		}
+	}
+}
+
+// ロック用のディレクトリを作れないとき、何のためのディレクトリかをエラーに出すこと。
+func TestSyncLockErrorExplainsPurpose(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfg)
+	if err := os.MkdirAll(filepath.Join(cfg, "esa-cli"), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(cfg, "esa-cli"), 0o755) })
+	if _, err := acquireSyncLock("/x"); err == nil || !strings.Contains(err.Error(), "同時実行を防ぐ") {
+		t.Errorf("ロックのエラーに目的が書かれていない: %v", err)
 	}
 }

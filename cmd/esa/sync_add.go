@@ -20,7 +20,8 @@ esa のカテゴリ・書き出し先のディレクトリ・名前を順に尋�
   esa sync add -category C -dir D      既定値を渡して開始（プロンプトで上書き可）
 
 オプション:
-  -category <カテゴリ>  esa のカテゴリ。https://<team>.esa.io/#path=... の URL をそのまま貼ってもよい
+  -category <カテゴリ>  esa のカテゴリ。カテゴリを開いたときの https://<team>.esa.io/#path=... の URL を
+                        そのまま貼ってもよい（記事の URL は不可。URL のチームは設定中の team と同じであること）
   -dir <ディレクトリ>   書き出し先（絶対パスか ~ 始まり）
   -name <名前>          esa sync <名前> で指定する名前（既定: カテゴリの末尾）
   （共通オプション -team/-profile は esa --help を参照）
@@ -45,6 +46,10 @@ func syncAdd(args []string) error {
 	if err != nil || done {
 		return err
 	}
+	if len(positional) == 1 && positional[0] == "help" { // esa config help と揃える
+		fmt.Fprint(os.Stdout, syncAddHelp)
+		return nil
+	}
 	if len(positional) > 0 {
 		return &usageError{fmt.Sprintf("エラー: 余分な引数があります: %s\n詳細:   esa sync add --help", strings.Join(positional, " "))}
 	}
@@ -58,7 +63,13 @@ func syncAdd(args []string) error {
 	fmt.Println("esa のカテゴリ配下の記事を、ローカルのディレクトリへ書き出す対象を登録します。")
 	fmt.Println()
 
-	t.Category = parseCategoryInput(promptDefault(in, "esa のカテゴリ（URL を貼ってもよい）", parseCategoryInput(t.Category)))
+	def, err := parseCategoryInput(t.Category, cfg.team)
+	if err != nil {
+		return err
+	}
+	if t.Category, err = parseCategoryInput(promptDefault(in, "esa のカテゴリ（URL を貼ってもよい）", def), cfg.team); err != nil {
+		return err
+	}
 	if t.Category == "" {
 		return &usageError{"エラー: カテゴリは必須です。\n詳細:   esa sync add --help"}
 	}
@@ -74,11 +85,8 @@ func syncAdd(args []string) error {
 	}
 	t.Name = strings.TrimSpace(promptDefault(in, "名前（esa sync <名前> で使う）", t.Name))
 
-	existing := map[string]bool{}
-	for _, e := range targets {
-		existing[e.Name] = true
-	}
-	if err := validateSyncTarget(t, existing); err != nil {
+	// esa に問い合わせる前に、保存したときと同じ検証を通す（名前の重複・dir の重なりを使い方エラーで先に止める）。
+	if err := validateSyncTargets(append(append([]syncTarget(nil), targets...), t)); err != nil {
 		return &usageError{"エラー: " + err.Error()}
 	}
 
@@ -95,19 +103,36 @@ func syncAdd(args []string) error {
 	return nil
 }
 
-// parseCategoryInput はカテゴリの入力を正規化する。esa の URL（…/#path=%2FUsers%2Fme）も受け付ける。
-func parseCategoryInput(s string) string {
+// parseCategoryInput はカテゴリの入力を正規化する。esa のカテゴリ一覧の URL（https://<team>.esa.io/#path=%2FUsers%2Fme）も受け付ける。
+//
+// 🚨 #path= の無い URL（記事の URL 等）を黙ってカテゴリ名として保存しない。以前は URL がそのままカテゴリになり、
+// 「記事が見つかりません。登録はします」で rc=0、以後の sync も 0 件のまま気づけなかった。
+// URL のチームが設定中の team と違う場合も止める（検索は設定中の team に対して行うため）。
+func parseCategoryInput(s, team string) (string, error) {
 	s = strings.TrimSpace(s)
-	if i := strings.Index(s, "#path="); i >= 0 {
-		raw := s[i+len("#path="):]
-		if j := strings.IndexByte(raw, '&'); j >= 0 {
-			raw = raw[:j]
-		}
-		if dec, err := url.QueryUnescape(raw); err == nil {
-			s = dec
-		}
+	if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+		return normalizeCategory(s), nil
 	}
-	return normalizeCategory(s)
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", &usageError{fmt.Sprintf("エラー: URL として解釈できません: %q", s)}
+	}
+	raw, ok := strings.CutPrefix(u.EscapedFragment(), "path=") // Fragment はデコード済みなので、もう一度デコードすると % を含む名前が壊れる
+	if !ok {
+		return "", &usageError{fmt.Sprintf("エラー: カテゴリの URL ではありません: %q\n"+
+			"  esa でカテゴリを開いたときの https://<team>.esa.io/#path=... の URL を貼るか、カテゴリ名（例: Users/me/skills）を入力してください。", s)}
+	}
+	if j := strings.IndexByte(raw, '&'); j >= 0 {
+		raw = raw[:j]
+	}
+	cat, err := url.PathUnescape(raw) // + を空白にしない（QueryUnescape は + を空白に変える）
+	if err != nil {
+		return "", &usageError{fmt.Sprintf("エラー: URL の #path= を解釈できません: %q", s)}
+	}
+	if host, found := strings.CutSuffix(strings.ToLower(u.Hostname()), ".esa.io"); found && team != "" && host != strings.ToLower(team) {
+		return "", &usageError{fmt.Sprintf("エラー: URL のチーム %q が、設定中のチーム %q と違います（-team で指定してください）", host, team)}
+	}
+	return normalizeCategory(cat), nil
 }
 
 // defaultSyncName はカテゴリの末尾を名前の既定にする（名前に使えない文字は - に置き換える）。

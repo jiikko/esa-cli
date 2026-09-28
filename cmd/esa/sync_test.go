@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -134,8 +137,8 @@ func runSync(t *testing.T, srv *httptest.Server, tg syncTarget, apply bool) (int
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	}
 	var out strings.Builder
-	n, err := runSyncTarget(testClient(srv.URL), tg, apply, &out)
-	return n, out.String(), err
+	plan, err := runSyncTarget(testClient(srv.URL), tg, apply, &out)
+	return plan.pending(), out.String(), err
 }
 
 // カテゴリの木がディレクトリの木へ写り、dry-run は何も書かず、--apply で書き、2 回目は変更なしになること。
@@ -391,6 +394,13 @@ func TestSyncRelPath(t *testing.T) {
 		{"R", "R/a/b", "SKILL", "a/b/SKILL.md", true, false},
 		{"R", "R", "x.md", "x.md", true, false},
 		{"R", "R", "SKILL.MD", "SKILL.MD", true, false}, // 大文字の .MD に .md を足さない
+		// ファイル名の上限は UTF-16 で 255。ファイルは一時ファイルの接尾辞（13）と .md（3）を足した長さで測る
+		{"R", "R", strings.Repeat("a", 239), strings.Repeat("a", 239) + ".md", true, false},
+		{"R", "R", strings.Repeat("a", 240), "", true, true},
+		{"R", "R", strings.Repeat("\U0001F600", 119) + "a", strings.Repeat("\U0001F600", 119) + "a.md", true, false}, // 絵文字は 2 単位
+		{"R", "R", strings.Repeat("\U0001F600", 120), "", true, true},
+		{"R", "R/" + strings.Repeat("b", 255), "x", strings.Repeat("b", 255) + "/x.md", true, false}, // ディレクトリは接尾辞を足さない
+		{"R", "R/" + strings.Repeat("b", 256), "x", "", true, true},
 		{"R", "R2", "x", "", false, false},
 		{"R", "Other/R", "x", "", false, false},
 		{"R", "R", "a/b", "", true, true},
@@ -984,5 +994,81 @@ func TestSyncLockErrorExplainsPurpose(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(filepath.Join(cfg, "esa-cli"), 0o755) })
 	if _, err := acquireSyncLock("/x"); err == nil || !strings.Contains(err.Error(), "同時実行を防ぐ") {
 		t.Errorf("ロックのエラーに目的が書かれていない: %v", err)
+	}
+}
+
+// `esa sync -apply add` のようにサブコマンドをフラグの後ろに書くと、add が対象の名前として扱われていた。
+// 予約名は対象に使えないので、書き方の誤りとして使い方エラーにすること。
+func TestSyncRejectsSubcommandAfterFlags(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, args := range [][]string{{"-apply", "add"}, {"-apply", "list"}, {"-team", "t", "help"}} {
+		var err error
+		captureStdio(t, func() { err = cmdSync(args) })
+		var ue *usageError
+		if !errors.As(err, &ue) || !strings.Contains(err.Error(), "直後に書いてください") {
+			t.Errorf("esa sync %v を書き方の誤りとして扱っていない: %v", args, err)
+		}
+	}
+}
+
+// --apply を繰り返しても、開いたままのファイル記述子と goroutine が増えないこと。
+//
+// 🚨 計測中は GC を止める。閉じ忘れた os.Root / os.File は GC の後始末（finalizer）が閉じるので、GC が走ると
+// 漏れが見えない（実測: GC を止めずに root.Close() を外しても fd は増えなかった。止めると 200 回で 11 → 171）。
+// fd は lsof で数える（macOS の /dev/fd の一覧はこのプロセスの fd を数えられなかった）。
+func TestSyncDoesNotLeakDescriptorsOrGoroutines(t *testing.T) {
+	if _, err := exec.LookPath("lsof"); err != nil {
+		t.Fatalf("lsof が無いので fd を数えられない（macOS 専用の repo なので在るはず）: %v", err)
+	}
+	countFDs := func() int {
+		out, err := exec.Command("lsof", "-n", "-P", "-p", fmt.Sprint(os.Getpid())).Output()
+		if err != nil {
+			t.Fatalf("lsof が失敗: %v", err)
+		}
+		return strings.Count(string(out), "\n") - 1
+	}
+	posts := map[int]map[string]any{}
+	for n := 1; n <= 20; n++ {
+		posts[n] = post(n, fmt.Sprintf("C/d%d", n%4), fmt.Sprint(n), fmt.Sprintf("body %d", n))
+	}
+	f := &fakeEsa{perPage: 7, posts: posts, failPost: map[int]bool{}}
+	srv := f.serve(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := filepath.Join(t.TempDir(), "out")
+	tg := syncTarget{Name: "c", Category: "C", Dir: dir}
+	applied := 0
+	run := func(i int) {
+		if i%10 == 6 { // 書き出し先が無い状態からの --apply（作ってから開き直す経路）も混ぜる
+			if err := os.RemoveAll(dir); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if i%5 == 3 { // 取得の失敗の経路も混ぜる
+			f.failPost[7] = true
+		} else {
+			delete(f.failPost, 7)
+		}
+		if i%4 == 0 { // 変更の経路も混ぜる
+			_ = os.WriteFile(filepath.Join(dir, "d1", "1.md"), []byte(fmt.Sprint("edit ", i)), 0o644)
+		}
+		if _, _, err := runSync(t, srv, tg, i%2 == 0); err == nil && i%2 == 0 {
+			applied++
+		}
+	}
+	for i := 0; i < 4; i++ { // 接続プールなどの初期化を済ませる
+		run(i)
+	}
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+	fd0, g0 := countFDs(), runtime.NumGoroutine()
+	applied = 0
+	for i := 4; i < 104; i++ {
+		run(i)
+	}
+	fd1, g1 := countFDs(), runtime.NumGoroutine()
+	if applied < 20 {
+		t.Fatalf("--apply がほとんど成功していない（%d 回）。漏れを測る経路を通っていない", applied)
+	}
+	if fd1 > fd0+2 || g1 > g0+2 {
+		t.Errorf("100 回の実行で増えた: fd %d → %d / goroutine %d → %d", fd0, fd1, g0, g1)
 	}
 }

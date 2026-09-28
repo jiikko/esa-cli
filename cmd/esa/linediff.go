@@ -135,18 +135,37 @@ func largeDiffSummary(a, b []string, labelA, labelB string) string {
 	fmt.Fprintf(&sb, "--- %s\n+++ %s\n", labelA, labelB)
 	fmt.Fprintf(&sb, "（大きいため行単位の差分を省略: %d 行 → %d 行。違うのは %d〜%d 行目（ローカル）/ %d〜%d 行目（esa）。先頭と末尾だけを示す）\n",
 		len(a), len(b), head+1, len(a)-tail, head+1, len(b)-tail)
-	show := func(sign byte, lines []string) {
-		const n = 5
-		for i, l := range lines {
-			if i == n && len(lines) > 2*n {
-				fmt.Fprintf(&sb, "%c…（%d 行略）\n", sign, len(lines)-2*n)
-			}
-			if i < n || i >= len(lines)-n {
-				fmt.Fprintf(&sb, "%c%s\n", sign, l)
-			}
-		}
-	}
-	show('-', a[head:len(a)-tail])
-	show('+', b[head:len(b)-tail])
+	writeElided(&sb, '-', a[head:len(a)-tail], 5)
+	writeElided(&sb, '+', b[head:len(b)-tail], 5)
 	return sb.String()
+}
+
+// syncNewFileShow は新規ファイルの本文を表示する行数の上限（先頭と末尾それぞれ）。
+const syncNewFileShow = 150
+
+// newFileSummary は新規ファイルの本文を「空 → 本文」の差分として返す。長ければ先頭と末尾だけにして省いた行数を示す
+// （上限が無いと、巨大な新規記事 1 つで他の差分が端末のスクロールバックから押し出される）。
+func newFileSummary(body, label string) string {
+	lines := splitLines(body)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "--- （無し）\n+++ %s\n@@ -0,0 +1,%d @@\n", label, len(lines))
+	writeElided(&sb, '+', lines, syncNewFileShow)
+	return sb.String()
+}
+
+// writeElided は lines を sign を付けて書く。2*keep 行を超えたら先頭と末尾の keep 行だけにし、間に省いた行数を書く。
+func writeElided(sb *strings.Builder, sign byte, lines []string, keep int) {
+	if len(lines) <= 2*keep {
+		for _, l := range lines {
+			fmt.Fprintf(sb, "%c%s\n", sign, l)
+		}
+		return
+	}
+	for _, l := range lines[:keep] {
+		fmt.Fprintf(sb, "%c%s\n", sign, l)
+	}
+	fmt.Fprintf(sb, "%c…（%d 行略。全 %d 行）\n", sign, len(lines)-2*keep, len(lines))
+	for _, l := range lines[len(lines)-keep:] {
+		fmt.Fprintf(sb, "%c%s\n", sign, l)
+	}
 }

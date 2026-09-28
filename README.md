@@ -1,12 +1,12 @@
 # esa
 
-esa (esa.io) の任意チームのドキュメントを **Chrome のログインセッション Cookie** で参照する読み取り専用 CLI。
+esa (esa.io) の任意チームのドキュメントを **Chrome のログインセッション Cookie** で参照する CLI（esa へは書き込まない）。
 Claude Code から esa の記事を検索・参照するために使う。トークン発行は不要。
 
 - **macOS 専用**。Chrome の Cookie を macOS Keychain 経由で復号し、esa の Web UI が使う内部エンドポイントを叩く（トークン不要）
 - **ログイン済みのプロファイルを自動検出**する（`-profile auto` が既定）。どの Chrome プロファイルで esa にログインしていても動く
 - パスはすべて HOME 基準で解決し、**カレントディレクトリに一切依存しない**（ディレクトリを移動しても動作する）
-- 読み取り専用（更新系は実装しない）
+- esa へは書き込まない（更新系は実装しない）。`esa sync` はカテゴリの記事をローカルのディレクトリへ書き出すだけ
 
 ## インストール
 
@@ -86,6 +86,7 @@ esa meta   <番号|URL>    記事のメタ情報を出力（-comments でコメ�
 esa revisions <番号|URL> リビジョン一覧（番号 / 更新日時 / 更新者）
 esa config               設定ファイル(config.yml)の表示・編集
 esa setup                対話式セットアップ（team と Chrome プロファイルを設定）
+esa sync [名前...]       カテゴリ配下の記事をローカルのディレクトリへ書き出す（既定は dry-run）
 esa help                 ヘルプ
 ```
 
@@ -211,6 +212,43 @@ profile: Profile 3  # 使用する Chrome プロファイル（省略時は auto
 
 > 補足: `search` を公式 API(api.esa.io) で高速化したい場合は環境変数 `ESA_TOKEN` を使う
 > （config.yml のキーではない。未設定でも Chrome cookie で動くので通常は不要）。
+
+## カテゴリをローカルのディレクトリへ書き出す（`sync`）
+
+esa のカテゴリ配下の記事を、ローカルのディレクトリへ Markdown のファイルとして書き出す（esa → ローカルの一方向）。
+Claude Code の skill や rule を esa で管理して手元へ配る、といった用途を想定している。esa への書き込みは無い。
+
+```sh
+esa sync add             # 対象を対話式で登録（カテゴリは esa の URL をそのまま貼ってもよい）
+esa sync                 # 全対象の差分を表示（書き込まない）
+esa sync skills --apply  # 1 対象を書き込む
+esa sync list            # 登録済みの対象
+```
+
+- 対象は `$XDG_CONFIG_HOME/esa-cli/sync.yml`（未設定なら `~/.config/esa-cli/sync.yml`）。`config.yml` とは別のファイル
+  （`esa config set` は `config.yml` を組み立て直してコメントを消すため。`sync.yml` は手で編集してもよく、
+  `esa sync add` の追記もコメントを残す）
+
+  ```yaml
+  targets:
+    - name: skills               # esa sync <name> で指定する名前
+      category: Users/me/skills  # esa のカテゴリ
+      dir: ~/.claude/skills      # 書き出し先（絶対パスか ~ 始まり）
+  ```
+
+- 対応の規則: `Users/me/skills/foo/SKILL` → `~/.claude/skills/foo/SKILL.md`。サブカテゴリがディレクトリ、
+  記事名がファイル名になり、`.md` を付ける（`.md` で終わる記事名はそのまま）。中身は本文の Markdown で、
+  front matter は付けず、改行は LF にそろえる。**WIP の記事も対象**。
+- 既定は dry-run（新規・変更の一覧と、変更の差分を出すだけ）。`--apply` で書き込む。
+- 書くのは esa にある記事のファイルだけで、**esa で消した記事のローカルのファイルは消さない**。
+  ローカルで編集したファイルは上書きする（dry-run の差分に出る）。
+- 1 件でも問題（記事の取得失敗・同じファイルになる 2 記事・書き出し先がシンボリックリンク等）があれば、
+  その対象は 1 件も書かない。書き込みは dir の外へ出られない（`os.Root` 経由）。
+- 大文字小文字・Unicode の正規化（NFC / NFD）だけが違う 2 記事は、macOS の既定のファイルシステムでは同じファイルになるので
+  エラーにする。dry-run の表示では制御文字・見えない文字を `\x{1b}` の形にエスケープする（ファイルの中身は変えない）。
+- `--apply` が書くのはその時点の esa の内容（dry-run の後に esa 側が変われば、変わった内容を書く。書く前に差分は出る）。
+- 記事の一覧は検索（`in:"<カテゴリ>" sort:number-asc`）のページ送りで集め、2 回続けて同じ一覧になるまで取り直す。
+  検索の索引への反映が遅れると、作ったばかりの記事がまだ出ないことがある。
 
 ## 補足
 

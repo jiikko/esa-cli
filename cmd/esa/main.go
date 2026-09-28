@@ -1,5 +1,5 @@
 // Command esa は esa.io の任意チームのドキュメントを Chrome のログインセッション
-// Cookie で参照する読み取り専用 CLI。Claude Code から esa の記事を検索・参照するために使う。
+// Cookie で参照する CLI（esa へは書き込まない）。Claude Code から esa の記事を検索・参照するために使う。
 // 対象チームは -team / ESA_TEAM / config.yml(team) で指定する（特定チームに依存しない）。
 //
 // 認証: Chrome の Cookie を Keychain 経由で復号して利用する（トークン発行不要）。
@@ -80,11 +80,11 @@ func newFlagSet(name string) *flag.FlagSet {
 }
 
 // topUsage は `esa` / `esa --help` の出力（サブコマンド一覧 + 1 行概要 + 共通事項）。
-const topUsage = `esa - <team>.esa.io ドキュメント参照 CLI（読み取り専用 / Chrome cookie 認証）
+const topUsage = `esa - <team>.esa.io ドキュメント参照 CLI（esa へは書き込まない / Chrome cookie 認証）
 
 概要:
   esa チームの記事を検索して本文を読むためのコマンド。公開 Web に無いチーム内の情報（手順書・規程・
-  インシデント記録・設計メモ等）を調べるのに使う。更新系は無い（読み取り専用）。
+  インシデント記録・設計メモ等）を調べるのに使う。esa への書き込みは無い（sync はローカルのディレクトリへ書き出すだけ）。
   認証は自動：ログイン済みの Chrome プロファイルを自動検出するので鍵やトークンの指定は不要。
   基本は 2 段階 — esa search '<クエリ>' で記事番号を得て、esa show <番号> で本文を読む。
 
@@ -93,6 +93,7 @@ const topUsage = `esa - <team>.esa.io ドキュメント参照 CLI（読み取�
   show        記事本文を Markdown（front matter 付き）で出力
   meta        記事のメタ情報を出力（-comments でコメントも）
   revisions   リビジョン一覧を出力
+  sync        カテゴリ配下の記事をローカルのディレクトリへ書き出す（esa sync --help）
   config      設定ファイル(config.yml)の表示・編集（使用プロファイル等を保存）
   setup       対話式セットアップ（team/プロファイル等を保存）
   help        このヘルプ
@@ -270,6 +271,8 @@ func main() {
 		err = cmdConfig(args)
 	case "setup":
 		err = cmdSetup(args)
+	case "sync":
+		err = cmdSync(args)
 	case "help", "-h", "--help":
 		fmt.Fprint(os.Stdout, topUsage)
 		return
@@ -587,23 +590,30 @@ func cmdRevisions(args []string) error {
 	return printJSON(data)
 }
 
-// parseTargetArgs は <番号|URL> を 1 つ取るコマンドの引数を解析する。
+// parsePositionals はフラグを位置引数の前後どちらに書いても効かせて解析し、位置引数を返す。
 //
-// フラグは番号の前後どちらに書いても効かせる。flag パッケージは最初の非フラグ引数で解析を
-// やめるため、`esa meta 28025 -comments` の -comments が黙って無視されていた。残りを解析し直す。
+// flag パッケージは最初の非フラグ引数で解析をやめるため、`esa meta 28025 -comments` の
+// -comments が黙って無視されていた。残りを解析し直す。
 // search はこの形にしない（除外検索の `-語` とフラグが衝突するため、checkNoTrailingFlags で弾く）。
-func parseTargetArgs(fs *flag.FlagSet, help string, args []string, cmd string) (number int, helpRequested bool, err error) {
-	var positional []string
+func parsePositionals(fs *flag.FlagSet, help string, args []string) (positional []string, helpRequested bool, err error) {
 	for {
 		if done, err := parseArgs(fs, help, args, os.Stdout); err != nil || done {
-			return 0, done, err
+			return nil, done, err
 		}
 		rest := fs.Args()
 		if len(rest) == 0 {
-			break
+			return positional, false, nil
 		}
 		positional = append(positional, rest[0])
 		args = rest[1:]
+	}
+}
+
+// parseTargetArgs は <番号|URL> を 1 つ取るコマンドの引数を解析する（フラグは番号の前後どちらでも可）。
+func parseTargetArgs(fs *flag.FlagSet, help string, args []string, cmd string) (number int, helpRequested bool, err error) {
+	positional, done, err := parsePositionals(fs, help, args)
+	if err != nil || done {
+		return 0, done, err
 	}
 	if len(positional) > 1 {
 		return 0, false, &usageError{fmt.Sprintf(

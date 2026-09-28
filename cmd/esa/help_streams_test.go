@@ -336,32 +336,50 @@ func TestSubcommandsGoThroughParseArgs(t *testing.T) {
 	}
 
 	// parseArgs を内部で呼ぶ共通の入口。これを呼んでいれば parseArgs を通したと数える。
-	wrappers := map[string]bool{"parseTargetArgs": true}
+	// 入口どうしは呼び合ってよい（parseTargetArgs → parsePositionals → parseArgs）。
+	// 🚨 到達性を辿るのはこの入口だけにする。任意の関数を辿ると、cmdSync の本体が素の Parse を使っていても、
+	// 分岐先の syncAdd が parseArgs を呼ぶだけで「通した」になる（変異で実測）。
+	wrappers := map[string]bool{"parseTargetArgs": true, "parsePositionals": true}
 
-	callsParseArgs := map[string]bool{}
-	callsWrapper := map[string]bool{}
+	calls := map[string]map[string]bool{}
 	forEachProductionFunc(t, func(fnName string, body ast.Node, _ map[string]bool) {
+		if calls[fnName] == nil {
+			calls[fnName] = map[string]bool{}
+		}
 		ast.Inspect(body, func(n ast.Node) bool {
 			if call, ok := n.(*ast.CallExpr); ok {
 				if id, ok := call.Fun.(*ast.Ident); ok {
-					if id.Name == "parseArgs" {
-						callsParseArgs[fnName] = true
-					}
-					if wrappers[id.Name] {
-						callsWrapper[fnName] = true
-					}
+					calls[fnName][id.Name] = true
 				}
 			}
 			return true
 		})
 	})
+	reaches := func(fn string, via map[string]bool) bool {
+		for callee := range calls[fn] {
+			if callee == "parseArgs" || via[callee] {
+				return true
+			}
+		}
+		return false
+	}
+	wrapperOK := map[string]bool{}
+	for changed := true; changed; {
+		changed = false
+		for w := range wrappers {
+			if !wrapperOK[w] && reaches(w, wrapperOK) {
+				wrapperOK[w], changed = true, true
+			}
+		}
+	}
 	for w := range wrappers {
-		if !callsParseArgs[w] {
+		if !wrapperOK[w] {
 			t.Errorf("%s() が parseArgs を呼んでいない（これを通るコマンドがまとめて素通りになる）", w)
 		}
 	}
-	for fn := range callsWrapper {
-		callsParseArgs[fn] = true
+	callsParseArgs := map[string]bool{}
+	for fn := range calls {
+		callsParseArgs[fn] = reaches(fn, wrapperOK)
 	}
 
 	for cmd := range commands {

@@ -127,6 +127,17 @@ func searchViaAPI(teamName, query string, perPage, page int, token string) ([]se
 
 // searchViaHTML は内部エンドポイント /posts?q=... の HTML から記事番号を抽出する。
 func (c *client) searchViaHTML(query string, page int) ([]searchResult, error) {
+	results, _, err := c.searchPage(query, page)
+	return results, err
+}
+
+// searchPage は検索結果の 1 ページを取得し、次のページがあるかも返す。
+//
+// 🚨 次のページの有無は pagination の rel="next" のリンクで判定する。件数や空ページでは判定できない
+// （実測 2026-09-29）: sort 指定なしで最後より先のページを要求すると 1 ページ目がもう一度返り、
+// sort 指定ありだと記事 0 件で「0 件」の目印も無いページが返る（後者は errParseFailed になる）。
+// どちらの場合も、最後のページには rel="next" が無い。
+func (c *client) searchPage(query string, page int) (results []searchResult, hasNext bool, err error) {
 	q := url.Values{}
 	q.Set("q", query)
 	if page > 1 {
@@ -134,23 +145,58 @@ func (c *client) searchViaHTML(query string, page int) ([]searchResult, error) {
 	}
 	body, ct, err := c.get("/posts?" + q.Encode())
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !strings.Contains(ct, "html") {
-		return nil, fmt.Errorf("検索: HTML 以外が返りました（Content-Type=%q）", ct)
+		return nil, false, fmt.Errorf("検索: HTML 以外が返りました（Content-Type=%q）", ct)
 	}
 
-	results, err := parseSearchHTML(body, c.baseURL)
+	results, err = parseSearchHTML(body, c.baseURL)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if len(results) == 0 {
 		if isEmptyResultPage(body) {
-			return []searchResult{}, nil // 明示的な 0 件
+			return []searchResult{}, false, nil // 明示的な 0 件
 		}
-		return nil, errParseFailed // 抽出失敗（セレクタ変更の疑い）
+		return nil, false, errParseFailed // 抽出失敗（セレクタ変更の疑い）
 	}
-	return results, nil
+	return results, hasNextPageLink(body), nil
+}
+
+// hasNextPageLink は検索結果の pagination に rel="next" のリンクがあるかを返す。
+// <head> の <link rel="next"> と取り違えないよう、class="pagination" の要素の中の <a> だけを見る。
+func hasNextPageLink(body []byte) bool {
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	var inPagination func(*html.Node, bool) bool
+	inPagination = func(n *html.Node, inside bool) bool {
+		if n.Type == html.ElementNode {
+			if !inside {
+				for _, cls := range strings.Fields(attr(n, "class")) {
+					if cls == "pagination" {
+						inside = true
+					}
+				}
+			}
+			if inside && n.Data == "a" {
+				for _, rel := range strings.Fields(attr(n, "rel")) {
+					if rel == "next" {
+						return true
+					}
+				}
+			}
+		}
+		for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+			if inPagination(ch, inside) {
+				return true
+			}
+		}
+		return false
+	}
+	return inPagination(doc, false)
 }
 
 var postHrefRe = regexp.MustCompile(`/posts/(\d+)`)
@@ -197,29 +243,39 @@ func (c *client) enrichResults(results []searchResult, concurrency int) (failed 
 	if len(results) == 0 {
 		return 0, nil
 	}
+	return forEachConcurrent(len(results), concurrency, func(i int) error {
+		post, err := c.postJSON(results[i].Number, false)
+		if err != nil {
+			return fmt.Errorf("記事 %d: %w", results[i].Number, err)
+		}
+		applyPostJSON(&results[i], post)
+		return nil
+	})
+}
+
+// forEachConcurrent は fn(0..n-1) を最大 concurrency 並列で実行し、失敗件数と最初に記録された
+// エラーを返す。fn は自分の添字の要素だけを書き換えること（それ以外の共有状態は守らない）。
+func forEachConcurrent(n, concurrency int, fn func(i int) error) (failed int, firstErr error) {
 	if concurrency < 1 {
 		concurrency = 1
 	}
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex // failed / firstErr を守る
-	for i := range results {
+	for i := 0; i < n; i++ {
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(i int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			post, err := c.postJSON(results[i].Number, false)
-			if err != nil {
+			if err := fn(i); err != nil {
 				mu.Lock()
 				failed++
 				if firstErr == nil {
-					firstErr = fmt.Errorf("記事 %d: %w", results[i].Number, err)
+					firstErr = err
 				}
 				mu.Unlock()
-				return
 			}
-			applyPostJSON(&results[i], post)
 		}(i)
 	}
 	wg.Wait()

@@ -82,7 +82,7 @@ esa config set team myteam     # 一度設定すれば以後不要（~/.config/e
 ```
 esa search <クエリ...>   記事を検索（結果は TSV。表示カラムは -c で変更可）
 esa show   <番号|URL>    記事本文を Markdown（YAML front matter 付き）で出力
-esa meta   <番号|URL>    記事のメタ情報を出力（-comments でコメントも）
+esa meta   <番号|URL>    記事のメタ情報を出力（-comments でコメントも / -copy でリンクをクリップボードへ）
 esa revisions <番号|URL> リビジョン一覧（番号 / 更新日時 / 更新者）
 esa config               設定ファイル(config.yml)の表示・編集
 esa setup                対話式セットアップ（team と Chrome プロファイルを設定）
@@ -105,6 +105,7 @@ esa show 28025
 esa show 28025 | sed -n '1,120p'   # 長い記事は範囲を絞る
 esa show 28025 | glow -            # Markdown を色付きで読む
 esa meta 28025 -comments
+esa meta -copy https://<team>.esa.io/posts/28025   # タイトルをリンクにした形でクリップボードへ
 esa search -json 'キーワード'            # JSON で受け取る（Claude Code / スクリプト向け）
 ```
 
@@ -153,7 +154,9 @@ esa search -json 'in:設計' | jq -r '.[].number'                  # JSON で受
 | `-json` | — | off | JSON で出力（search / meta / revisions。show は常に Markdown） |
 
 search 専用: `-c` / `-columns`、`-no-header`、`-fast`、`-n <数>`、`-page <数>`。
-meta 専用: `-comments`。
+meta 専用: `-comments`、`-copy`。
+
+フラグは `show` / `meta` / `revisions` では番号の前後どちらに書いてもよい（`search` はクエリより前に置く）。
 
 ## プロファイルの自動検出
 
@@ -204,6 +207,21 @@ profile: Profile 3  # 使用する Chrome プロファイル（省略時は auto
   未設定時は内部エンドポイントの検索 HTML から記事番号を取り、各記事 JSON で詳細を補完する。
   `show` / `meta` / `revisions` は常に Cookie を使う（`.md` 取得は内部エンドポイントの利点）。
 - 取得内容は社内情報。外部サービスへの貼り付け・保存に注意。
+
+## Slack にタイトル付きで貼る（`meta -copy`）
+
+非公開チームの esa は Slack で URL が展開されない。`esa meta -copy <番号|URL>` は、
+タイトルの文字がリンクになった形（HTML の `<a href=URL>タイトル</a>`）と「タイトル URL」のテキストを
+**同時に**クリップボードへ入れる。Slack のように HTML を受け取る貼り先ではタイトルがリンクになり、
+ターミナルなどテキストしか受け取らない貼り先では「タイトル URL」が貼られる。
+
+```sh
+esa meta -copy https://<team>.esa.io/posts/28025#comment-1   # # や ? 付きの URL もそのまま渡せる
+```
+
+- WIP の記事はタイトルの前に `[WIP] ` が付く。コピーした内容は stdout にも出る
+- `-json` / `-comments` とは併用できない（rc=2）
+- クリップボードへの書き込みには `osascript` を使う（`pbcopy` はテキストしか入れられないため）
 
 ## スクリプト・自動化から使う
 

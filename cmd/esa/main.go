@@ -207,6 +207,9 @@ const metaHelp = `esa meta - 記事のメタ情報を出力する
 オプション:
   -comments   コメントも取得して表示する
   -json       記事オブジェクト全体を JSON で出力
+  -copy       タイトルをリンクにした形でクリップボードへコピーする（Slack 等に貼る用）。
+              HTML（<a href=URL>タイトル</a>）と「タイトル URL」のテキストを同時に入れる。
+              -json / -comments とは併用不可
   （共通オプション -team/-profile は esa --help を参照）
 
 既定の表示（読みやすい key: value 形式）:
@@ -217,6 +220,7 @@ const metaHelp = `esa meta - 記事のメタ情報を出力する
   esa meta 28025
   esa meta 28025 -comments
   esa meta 28025 -json | jq '.updated_by.screen_name'
+  esa meta -copy https://<team>.esa.io/posts/28025
 `
 
 // revisionsHelp は `esa revisions --help` の詳細。
@@ -414,12 +418,8 @@ func cmdShow(args []string) error {
 	var cfg config
 	fs := newFlagSet("show")
 	registerCommon(fs, &cfg)
-	if done, err := parseArgs(fs, showHelp, args, os.Stdout); err != nil || done {
-		return err
-	}
-
-	number, err := parseNumberArg(fs.Args(), "show")
-	if err != nil {
+	number, done, err := parseTargetArgs(fs, showHelp, args, "show")
+	if err != nil || done {
 		return err
 	}
 	c, err := buildCookieClient(cfg)
@@ -439,17 +439,17 @@ func cmdShow(args []string) error {
 
 func cmdMeta(args []string) error {
 	var cfg config
-	var withComments bool
+	var withComments, toClipboard bool
 	fs := newFlagSet("meta")
 	registerCommon(fs, &cfg)
 	fs.BoolVar(&withComments, "comments", false, "コメントも取得する")
-	if done, err := parseArgs(fs, metaHelp, args, os.Stdout); err != nil || done {
+	fs.BoolVar(&toClipboard, "copy", false, "タイトルをリンクにした形でクリップボードへコピーする")
+	number, done, err := parseTargetArgs(fs, metaHelp, args, "meta")
+	if err != nil || done {
 		return err
 	}
-
-	number, err := parseNumberArg(fs.Args(), "meta")
-	if err != nil {
-		return err
+	if toClipboard && (cfg.asJSON || withComments) {
+		return &usageError{"エラー: -copy は -json / -comments と同時に使えません。\n詳細:   esa meta --help"}
 	}
 	c, err := buildCookieClient(cfg)
 	if err != nil {
@@ -460,6 +460,18 @@ func cmdMeta(args []string) error {
 		return err
 	}
 
+	if toClipboard {
+		plain, htmlDoc, err := slackLink(post)
+		if err != nil {
+			return err
+		}
+		if err := copyToClipboard(plain, htmlDoc); err != nil {
+			return err
+		}
+		fmt.Println(plain)
+		fmt.Fprintln(os.Stderr, "→ クリップボードにコピーしました（Slack に貼るとタイトルがリンクになります）")
+		return nil
+	}
 	if cfg.asJSON {
 		return printJSON(post)
 	}
@@ -497,12 +509,8 @@ func cmdRevisions(args []string) error {
 	var cfg config
 	fs := newFlagSet("revisions")
 	registerCommon(fs, &cfg)
-	if done, err := parseArgs(fs, revisionsHelp, args, os.Stdout); err != nil || done {
-		return err
-	}
-
-	number, err := parseNumberArg(fs.Args(), "revisions")
-	if err != nil {
+	number, done, err := parseTargetArgs(fs, revisionsHelp, args, "revisions")
+	if err != nil || done {
 		return err
 	}
 	c, err := buildCookieClient(cfg)
@@ -531,6 +539,33 @@ func cmdRevisions(args []string) error {
 	return printJSON(data)
 }
 
+// parseTargetArgs は <番号|URL> を 1 つ取るコマンドの引数を解析する。
+//
+// フラグは番号の前後どちらに書いても効かせる。flag パッケージは最初の非フラグ引数で解析を
+// やめるため、`esa meta 28025 -comments` の -comments が黙って無視されていた。残りを解析し直す。
+// search はこの形にしない（除外検索の `-語` とフラグが衝突するため、checkNoTrailingFlags で弾く）。
+func parseTargetArgs(fs *flag.FlagSet, help string, args []string, cmd string) (number int, helpRequested bool, err error) {
+	var positional []string
+	for {
+		if done, err := parseArgs(fs, help, args, os.Stdout); err != nil || done {
+			return 0, done, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		positional = append(positional, rest[0])
+		args = rest[1:]
+	}
+	if len(positional) > 1 {
+		return 0, false, &usageError{fmt.Sprintf(
+			"エラー: 記事は 1 つだけ指定してください（%s）。\n使い方: esa %s <番号|URL>\n詳細:   esa %s --help",
+			strings.Join(positional, " "), cmd, cmd)}
+	}
+	number, err = parseNumberArg(positional, cmd)
+	return number, false, err
+}
+
 func parseNumberArg(args []string, cmd string) (int, error) {
 	if len(args) == 0 {
 		return 0, &usageError{fmt.Sprintf(
@@ -539,6 +574,11 @@ func parseNumberArg(args []string, cmd string) (int, error) {
 	}
 	// URL 末尾の番号も受け付ける。
 	raw := args[0]
+	// ブラウザからコピーした URL には #comment-123 や ?query が付いていることがある。
+	if i := strings.IndexAny(raw, "#?"); i >= 0 {
+		raw = raw[:i]
+	}
+	raw = strings.TrimSuffix(raw, "/")
 	if i := strings.LastIndex(raw, "/posts/"); i >= 0 {
 		raw = raw[i+len("/posts/"):]
 	}

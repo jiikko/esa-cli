@@ -335,17 +335,34 @@ func TestSubcommandsGoThroughParseArgs(t *testing.T) {
 		t.Fatalf("canary: cmdSearch が main の switch から抽出できていない（抽出結果: %v）", commands)
 	}
 
+	// parseArgs を内部で呼ぶ共通の入口。これを呼んでいれば parseArgs を通したと数える。
+	wrappers := map[string]bool{"parseTargetArgs": true}
+
 	callsParseArgs := map[string]bool{}
+	callsWrapper := map[string]bool{}
 	forEachProductionFunc(t, func(fnName string, body ast.Node, _ map[string]bool) {
 		ast.Inspect(body, func(n ast.Node) bool {
 			if call, ok := n.(*ast.CallExpr); ok {
-				if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "parseArgs" {
-					callsParseArgs[fnName] = true
+				if id, ok := call.Fun.(*ast.Ident); ok {
+					if id.Name == "parseArgs" {
+						callsParseArgs[fnName] = true
+					}
+					if wrappers[id.Name] {
+						callsWrapper[fnName] = true
+					}
 				}
 			}
 			return true
 		})
 	})
+	for w := range wrappers {
+		if !callsParseArgs[w] {
+			t.Errorf("%s() が parseArgs を呼んでいない（これを通るコマンドがまとめて素通りになる）", w)
+		}
+	}
+	for fn := range callsWrapper {
+		callsParseArgs[fn] = true
+	}
 
 	for cmd := range commands {
 		if callsParseArgs[cmd] {

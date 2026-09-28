@@ -16,14 +16,14 @@
 
 ## やること（受け入れ条件）
 
-- [ ] `.github/workflows/ci.yml` を追加し、push / PR で以下が走る
-  - [ ] `gofmt -l .` の出力が空（整形差分ゼロ）
-  - [ ] `go vet ./...`
-  - [ ] `go build ./cmd/esa`
-  - [ ] `go test ./...`
-- [ ] **検査が実際に走った証拠を CI ログで確認する**（緑だけで判断しない。各ステップの出力が出ていること）
-- [ ] **意図的に壊す変更を 1 つ当てて CI が赤くなることを確認する**（検査が退行を検出できる証拠）
-- [ ] テスト対象の選定と実装（下記「テストできる範囲」）
+- [x] `.github/workflows/ci.yml` を追加し、push / PR で以下が走る
+  - [x] `gofmt -l .` の出力が空（整形差分ゼロ）
+  - [x] `go vet ./...`
+  - [x] `go build ./cmd/esa`（`go build ./...` で覆う）
+  - [x] `go test ./...`（`-race` 付き）
+- [x] **検査が実際に走った証拠を CI ログで確認する**（緑だけで判断しない。各ステップの出力が出ていること）
+- [x] **意図的に壊す変更を 1 つ当てて CI が赤くなることを確認する**（検査が退行を検出できる証拠）
+- [x] テスト対象の選定と実装（下記「テストできる範囲」）
 
 ## 設計メモ
 
@@ -61,3 +61,24 @@ CI の実効性はここに懸かっている。テストが 0 件のままで�
 - **リリース自動化は別 issue**: タグ push で GoReleaser を回し、tap の formula（`url` / `sha256` / `version`）を
   自動更新する。雛形は `.goreleaser.yaml` に置いてある。現状はタグ付け → sha256 取得 → formula 手動更新の 3 手
 - 実アクセスを伴う動作確認は CI では不可。必要なら `human` issue として起票する
+
+## 進捗
+
+### 2026-09-29 完了
+
+- commit「ci: GitHub Actions で gofmt / build / vet / test -race を回す（issue 001）」: newrelic-nrql-cli の ci.yml と同じ形。
+  **runner は macOS**（設計メモの ubuntu 案から変えた）: 配布先の Homebrew が macOS でビルドするので同じ OS で検査する。
+  public repo なので macOS runner も無料。paths フィルタは付けない（起動しなかった HEAD を緑と読み替えないため）
+- 走った証拠（run 36447208665, 9bfa413）: `gofmt: 差分なし（20 ファイルを検査）` / `go build` が chromecookie を取得 /
+  `go vet` / `go test -race` が `ok github.com/jiikko/esa-cli/cmd/esa` をログに出している
+- 赤くなる証拠: 紹介カードの本文の HTML エスケープを外した commit を一時 ref（ci-canary-esa-001）に push して
+  workflow_dispatch で走らせ、`--- FAIL: TestSlackCardLayoutAndEscaping` で失敗（run 36447709706）。ref は削除済み
+- テストできる範囲の現状（起票時は 0 件）:
+  - `cookieHostMatches` / `pkcs7Unpad` / `decryptValue` は chromecookie（dotfiles/src/chromecookie）へ移り、そちらでテストされる。
+    esa 側は `chromecookie.HostMatches` の回帰表（cookies_test.go）を持つ
+  - `buildCookieHeader` / `parseSearchHTML`（0 件と抽出失敗の区別は search_empty_test.go）/ `parseNumberArg` は既存のテストがある
+  - `parseColumns` / `columnsNeedEnrich` / `dateOnly` / `applyPostJSON` は columns_test.go を新設。変異で red を確認
+    （不明カラムを通す / enrich 判定を常に偽 / 日付を 7 文字で切る / エスケープを復元しない / タグを置き換えず追記）
+- CI で検査しないと決めたこと（Chrome Cookie の復号の実行・プロファイル自動検出・esa への実アクセス・brew install）は起票時のとおり。
+  brew の入れ直しと疎通は README の「リリース」節で手元の手順にした
+- 残タスク: リリース自動化（GoReleaser）は起票時のとおり別 issue（未起票）

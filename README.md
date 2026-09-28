@@ -251,7 +251,7 @@ esa meta -copy-title 28025                                    # タイトルの�
 
 ## リリース
 
-1. この repo には CI が無いので、手元で `gofmt -l .`（出力なし）/ `go vet ./...` / `go test -race ./...` が通ることを確かめてから tag を打つ（`git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`）
+1. `main` の CI（gofmt / build / vet / `test -race`）が緑であることを確かめてから tag を打つ（`git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`）
 2. `curl -sL https://github.com/jiikko/esa-cli/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256` の値で、
    [jiikko/homebrew-tap](https://github.com/jiikko/homebrew-tap) の `Formula/esa.rb` の `url` と `sha256` を更新して push する
 3. **手元で入れ直して疎通を確かめる**（tag・tap・ソースからのビルドのどれかが壊れていても、ここまで来ないと分からない）

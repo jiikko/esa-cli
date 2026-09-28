@@ -59,6 +59,10 @@ func cmdSetup(args []string) error {
 	if team == "" {
 		return &usageError{"エラー: team は必須です。もう一度 esa setup を実行し、チーム名を入力してください。"}
 	}
+	team, err := validateTeam(team) // 正規化（小文字化）した値を使い、保存する
+	if err != nil {
+		return err
+	}
 	cfg.team = team
 
 	// 2. プロファイル検出（esa Cookie を持つものを列挙し、認証可否とメールを表示）
@@ -66,15 +70,30 @@ func cmdSetup(args []string) error {
 	type cand struct {
 		dir, email string
 		authed     bool
+		unverified string // 認証をプロファイル固有の理由で確認できなかった理由（空なら確認できた）
 	}
 	var cands []cand
+	var skipped skippedProfiles
 	firstAuthed := -1
-	for _, pi := range listProfileInfos() {
-		c, err := buildClientForProfile(cfg, pi.dir)
-		if err != nil {
-			continue // esa Cookie が無いプロファイルは候補外
+	for _, pi := range listSetupProfiles() {
+		res, err := probeProfile(cfg, pi.dir)
+		authed := res.authed
+		if isProfileSkip(err) && res.c != nil {
+			// 認証の確認がプロファイル固有の理由で失敗: 候補から外さず印を付けて選べるようにする
+			// （-profile 明示指定が警告して進むのと揃える。Cookie は持っているので「Cookie を持つ
+			// プロファイルが見つからない」の見出しとも食い違わない）。
+			cands = append(cands, cand{dir: pi.dir, email: pi.email, unverified: res.reason})
+			continue
 		}
-		authed := c.authOK()
+		if isProfileSkip(err) {
+			skipped.note(err) // 壊れた / 読めない: 理由を残して候補外
+			continue          // esa Cookie が無いプロファイルは候補外
+		}
+		if err != nil {
+			// 環境エラー（Keychain・一時ディレクトリ）や認証を確認できない状態を
+			// 「候補なし」「未認証」に化けさせない（profile.go の profileSkipError）。
+			return err
+		}
 		if authed && firstAuthed < 0 {
 			firstAuthed = len(cands)
 		}
@@ -83,15 +102,24 @@ func cmdSetup(args []string) error {
 	if len(cands) == 0 {
 		return fmt.Errorf(
 			"%s に esa（%s）の Cookie を持つプロファイルが見つかりませんでした。\n"+
-				"  %s で https://%s にログインしてから、もう一度 esa setup を実行してください。",
-			chromeName, cfg.teamHost(), chromeName, cfg.teamHost())
+				"  %s で https://%s にログインしてから、もう一度 esa setup を実行してください。%s",
+			chromeName, cfg.teamHost(), chromeName, cfg.teamHost(), skipped.suffix())
+	}
+	if len(skipped.msgs) > 0 {
+		fmt.Printf("\n注意: 次のプロファイルは使えなかったため候補から外しました:\n  - %s\n", strings.Join(skipped.msgs, "\n  - "))
+		if skipped.perm {
+			fmt.Println(strings.TrimPrefix(permissionHint, "\n"))
+		}
 	}
 
 	fmt.Println("\n候補プロファイル:")
 	for i, c := range cands {
 		mark := "—（このチームでは未認証）"
-		if c.authed {
+		switch {
+		case c.authed:
 			mark = "✓ 認証OK"
+		case c.unverified != "":
+			mark = "?（認証を確認できず: " + c.unverified + "）"
 		}
 		email := c.email
 		if email == "" {
@@ -115,7 +143,11 @@ func cmdSetup(args []string) error {
 	}
 	chosen := cands[idx-1]
 	if !chosen.authed {
-		fmt.Printf("警告: プロファイル %q は今このチームで認証が通りませんが、指定どおり保存します。\n", chosen.dir)
+		if chosen.unverified != "" {
+			fmt.Printf("警告: プロファイル %q は今このチームで認証を確認できません（%s）が、指定どおり保存します。\n", chosen.dir, chosen.unverified)
+		} else {
+			fmt.Printf("警告: プロファイル %q は今このチームで認証が通りませんが、指定どおり保存します。\n", chosen.dir)
+		}
 	}
 	cfg.profile = chosen.dir
 

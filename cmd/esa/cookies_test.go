@@ -3,7 +3,9 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -147,7 +149,7 @@ func TestDecryptValue(t *testing.T) {
 
 	t.Run("v10 の暗号文を復号できる", func(t *testing.T) {
 		enc := encryptForTest(t, key, []byte("session-value"))
-		got, err := decryptValue(enc, key, 0)
+		got, err := decryptValue(enc, key, 0, "")
 		if err != nil {
 			t.Fatalf("decryptValue: %v", err)
 		}
@@ -156,11 +158,10 @@ func TestDecryptValue(t *testing.T) {
 		}
 	})
 
-	t.Run("Chrome 130+ は先頭 32 バイトのハッシュを落とす", func(t *testing.T) {
-		plain := append(make([]byte, 32), []byte("session-value")...) // 先頭 32 バイトはホストのハッシュ
-		enc := encryptForTest(t, key, plain)
+	t.Run("Chrome 130+ は先頭 32 バイトの SHA256(host_key) を照合して落とす", func(t *testing.T) {
+		enc := encryptForTest(t, key, v24Plain(".esa.io", "session-value"))
 
-		got, err := decryptValue(enc, key, 24) // meta.version >= 24
+		got, err := decryptValue(enc, key, 24, ".esa.io") // meta.version >= 24
 		if err != nil {
 			t.Fatalf("decryptValue: %v", err)
 		}
@@ -169,12 +170,47 @@ func TestDecryptValue(t *testing.T) {
 		}
 
 		// 古い Chrome（version < 24）では落としてはいけない。
-		old, err := decryptValue(enc, key, 23)
+		old, err := decryptValue(enc, key, 23, ".esa.io")
 		if err != nil {
 			t.Fatalf("decryptValue: %v", err)
 		}
-		if len(old) != len(plain) {
-			t.Errorf("古い版で 32 バイトを落としている: len=%d, want %d", len(old), len(plain))
+		if len(old) != 32+len("session-value") {
+			t.Errorf("古い版で 32 バイトを落としている: len=%d", len(old))
+		}
+
+		// 先頭 32 バイトが別ホストのハッシュ / ゼロ埋めなら復号失敗。
+		if _, err := decryptValue(enc, key, 24, "team.esa.io"); err == nil {
+			t.Error("host_key が違うのにハッシュ照合を通した")
+		}
+		zero := encryptForTest(t, key, append(make([]byte, 32), []byte("session-value")...))
+		if _, err := decryptValue(zero, key, 24, ".esa.io"); err == nil {
+			t.Error("ゼロ埋めのプレフィックスを照合せずに通した")
+		}
+	})
+
+	// 鍵違いでも PKCS7 の末尾は約 1/256 で偶然通り、v24 の長い値は 32 バイトを落としても残る。
+	// 実際の件数（数千件）では照合が無いと数件が「復号成功」に紛れ、全件失敗の検出が働かない。
+	t.Run("鍵違い・長い値・多数件で 1 件も成功にしない（v24）", func(t *testing.T) {
+		other, err := deriveKey([]byte("wrongpassword"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		const n = 3000
+		var ok, unpadOK int
+		for i := 0; i < n; i++ {
+			enc := encryptForTest(t, key, v24Plain(".esa.io", strings.Repeat("x", 200+i%50)+strconv.Itoa(i)))
+			if _, err := decryptValue(enc, other, 24, ".esa.io"); err == nil {
+				ok++
+			}
+			if _, err := decryptValue(enc, other, 0, ""); err == nil {
+				unpadOK++ // 照合の無い経路で偶然通った数（fixture が穴を再現できている証拠）
+			}
+		}
+		if unpadOK == 0 {
+			t.Fatalf("前提: 鍵違いで PKCS7 を偶然通る値が 1 件も無い（fixture が穴を再現していない）")
+		}
+		if ok != 0 {
+			t.Errorf("鍵違いの %d/%d 件を復号成功にした（PKCS7 を偶然通った値: %d 件）", ok, n, unpadOK)
 		}
 	})
 
@@ -184,14 +220,14 @@ func TestDecryptValue(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, err := decryptValue(enc, other, 0)
+		got, err := decryptValue(enc, other, 0, "")
 		if err == nil && got == "session-value" {
 			t.Error("違う鍵で復号できてしまった")
 		}
 	})
 
 	t.Run("v10 でない値は平文として返す", func(t *testing.T) {
-		got, err := decryptValue([]byte("plain-old-value"), key, 0)
+		got, err := decryptValue([]byte("plain-old-value"), key, 0, "")
 		if err != nil {
 			t.Fatalf("decryptValue: %v", err)
 		}
@@ -201,24 +237,30 @@ func TestDecryptValue(t *testing.T) {
 	})
 
 	t.Run("空の値", func(t *testing.T) {
-		got, err := decryptValue(nil, key, 0)
+		got, err := decryptValue(nil, key, 0, "")
 		if err != nil || got != "" {
 			t.Errorf("got %q err=%v", got, err)
 		}
 	})
 
 	t.Run("ブロック長に合わない暗号文はエラー", func(t *testing.T) {
-		if _, err := decryptValue([]byte("v10abc"), key, 0); err == nil {
+		if _, err := decryptValue([]byte("v10abc"), key, 0, ""); err == nil {
 			t.Error("エラーになるべき")
 		}
 	})
 
 	t.Run("復号結果がハッシュプレフィックスより短いとエラー", func(t *testing.T) {
 		enc := encryptForTest(t, key, []byte("short")) // 32 バイト未満
-		if _, err := decryptValue(enc, key, 24); err == nil {
+		if _, err := decryptValue(enc, key, 24, ".esa.io"); err == nil {
 			t.Error("エラーになるべき")
 		}
 	})
+}
+
+// v24Plain は DB version 24 以上の平文（SHA256(host_key) + 値）を作る。
+func v24Plain(hostKey, value string) []byte {
+	h := sha256.Sum256([]byte(hostKey))
+	return append(h[:], []byte(value)...)
 }
 
 // encryptForTest は Chrome と同じ形式（v10 + AES-128-CBC + IV=0x20*16 + PKCS7）で暗号化する。

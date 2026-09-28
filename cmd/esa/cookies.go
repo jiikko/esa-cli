@@ -1,19 +1,22 @@
 // Google Chrome の Cookie を macOS Keychain 経由で復号して取り出す。
 //
 // 仕様（PBKDF2-SHA1 1003 回 / AES-128-CBC / IV=0x20*16 / Chrome 130+ =
-// meta.version>=24 で復号後の先頭 32 バイトがホストハッシュ）は
+// meta.version>=24 で復号後の先頭 32 バイトが SHA256(host_key)）は
 // github.com/jiikko/newrelic-nrql-cli の cmd/nrql/cookies.go と共通なので、
 // 修正が要る場合は両方に当てること。
 package main
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/pbkdf2"
 	"crypto/sha1"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -50,6 +53,10 @@ type cookieEntry struct {
 	value string
 }
 
+// keychainPassword はテストの差し替え口（seam）。production では常に getKeychainPassword。
+// 実物は security を起動して Keychain を読むため、テストからは fake に差し替える。
+var keychainPassword = getKeychainPassword
+
 // getKeychainPassword は Keychain から "Chrome Safe Storage" のパスワードを取得する。
 func getKeychainPassword() ([]byte, error) {
 	cmd := exec.Command("security", "find-generic-password",
@@ -77,8 +84,20 @@ func deriveKey(password []byte) ([]byte, error) {
 
 // decryptValue は encrypted_value を復号する。
 // v10 プレフィックスなら AES-128-CBC（IV=0x20*16, PKCS7）で復号し、
-// metaVersion>=24 なら復号後の先頭 32 バイト（ハッシュプレフィックス）を落とす。
-func decryptValue(enc, key []byte, metaVersion int) (string, error) {
+// metaVersion>=24 なら復号後の先頭 32 バイト（ホストハッシュ）を照合してから落とす。
+//
+// 🚨 v24 以上では、先頭 32 バイトが SHA256(host_key) と一致することを確かめる。
+// 根拠: Chromium の net/extras/sqlite/sqlite_persistent_cookie_store.cc は DB version 24 から
+// 暗号化前の平文の先頭に crypto::SHA256HashString(<cookie の domain = host_key 列の値>) を付け、
+// 読み出し時に同じ値と比べて一致しなければ復号失敗として扱う（domain hash prefix）。
+// host_key は DB に保存されたとおりの値（先頭ドットを含む。例 ".esa.io"）を渡すこと。
+// 照合しないと、鍵違いでも PKCS7 の末尾が約 1/256 の確率で偶然通り、v24 の長い値は
+// 32 バイトを落としても残るため、多数件の DB では「全件復号失敗」の検出が働かない。
+// この照合は v24 以上にしか効かない。v23 以前の平文には照合できる情報が無いので、鍵違いでも
+// PKCS7 を偶然通った値は成功に数えられる（全件失敗の検出は「偶然通った値が 0 件」のときだけ働く）。
+// 照合を誤ると（host_key の加工・別のハッシュ）正常な Cookie が全部復号失敗になるので、
+// 変えるときは実機の Cookie DB で確認すること。
+func decryptValue(enc, key []byte, metaVersion int, hostKey string) (string, error) {
 	if len(enc) == 0 {
 		return "", nil
 	}
@@ -105,10 +124,14 @@ func decryptValue(enc, key []byte, metaVersion int) (string, error) {
 		return "", err
 	}
 	if metaVersion >= 24 {
-		if len(plain) < 32 {
+		if len(plain) < sha256.Size {
 			return "", errors.New("復号結果がハッシュプレフィックスより短いです")
 		}
-		plain = plain[32:]
+		want := sha256.Sum256([]byte(hostKey))
+		if !bytes.Equal(plain[:sha256.Size], want[:]) {
+			return "", errors.New("復号結果のホストハッシュが一致しません（鍵が違う可能性）")
+		}
+		plain = plain[sha256.Size:]
 	}
 	return string(plain), nil
 }
@@ -145,15 +168,40 @@ func cookieDBSourcePath(profile string) (string, error) {
 		filepath.Join(base, "Cookies"),
 	}
 	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
+		_, err := os.Stat(c)
+		if err == nil {
 			return c, nil
 		}
+		// 🚨 「無い」(ENOENT) だけを次の候補へ進める。それ以外（権限・I/O）は「見つからない」に
+		// 化けさせず、理由を記録して次のプロファイルへ進む（skip + 記録）。
+		// 権限（EACCES / EPERM）を即停止にしないこと: chmod 000 や root 所有（sudo で起動した
+		// Chrome が作ったもの）のプロファイルはプロファイル固有で、フルディスクアクセスを付けても直らない。
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", accessSkipError(profile, "確認できません", c, err)
+		}
 	}
-	return "", fmt.Errorf(
+	// プロファイル固有の欠落なので、自動検出は次のプロファイルへ進んでよい（profile.go）。
+	return "", &profileSkipError{msg: fmt.Sprintf(
 		"Cookie DB が見つかりませんでした（プロファイル=%q）。探した場所:\n  %s\n"+
 			"  - プロファイル名が正しいか確認してください（-profile / ESA_CHROME_PROFILE）。\n"+
 			"  - ~/Library/Application Support/%s/ 配下のディレクトリ名がプロファイル名です（既定は Default）。",
-		profile, strings.Join(candidates, "\n  "), chromeSupportSubdir)
+		profile, strings.Join(candidates, "\n  "), chromeSupportSubdir)}
+}
+
+// accessSkipError は Cookie DB（本体 / -wal / -shm）を stat・読み取りできなかったことを表す
+// skip + 記録のエラー。権限（EACCES / EPERM）なら perm を立て、最終的に認証済みプロファイルが
+// 見つからなかったときに権限の案内（profile.go の permissionHint）を添えさせる。
+func accessSkipError(profile, what, path string, err error) error {
+	reason := "読み取りエラー"
+	perm := errors.Is(err, fs.ErrPermission)
+	if perm {
+		reason = "アクセス拒否"
+	}
+	return &profileSkipError{
+		msg:    fmt.Sprintf("プロファイル %q の Cookie DB を%s（%s）: %s: %v", profile, what, reason, path, err),
+		broken: true,
+		perm:   perm,
+	}
 }
 
 // --- 一時コピーの後始末 ---
@@ -309,7 +357,7 @@ func processAlive(pid int) bool {
 // copyCookieDB は Cookie DB を一時ディレクトリへコピーする。
 // WAL に未反映のセッション Cookie を取りこぼさないよう、-wal / -shm も同名でコピーする。
 // 返り値: 一時 DB パスと後始末関数。
-func copyCookieDB(src string) (string, func(), error) {
+func copyCookieDB(profile, src string) (string, func(), error) {
 	root, err := ensureCookieTempRoot()
 	if err != nil {
 		return "", nil, err
@@ -326,18 +374,14 @@ func copyCookieDB(src string) (string, func(), error) {
 		s := src + suffix
 		data, err := os.ReadFile(s)
 		if err != nil {
-			if suffix == "" {
-				cleanup()
-				if os.IsPermission(err) {
-					return "", nil, fmt.Errorf(
-						"Cookie DB を読み取れませんでした（アクセス拒否）。\n"+
-							"  ターミナル（またはこのツールを起動しているアプリ）に「フルディスクアクセス」を付与してください:\n"+
-							"    システム設定 → プライバシーとセキュリティ → フルディスクアクセス\n"+
-							"  対象ファイル: %s", src)
-				}
-				return "", nil, fmt.Errorf("Cookie DB の読み取りに失敗: %w", err)
+			// 🚨 -wal / -shm は「無い」(ENOENT) ときだけ飛ばす。権限・I/O エラーで飛ばすと、
+			// WAL にしか無いセッション Cookie が落ちて「Cookie 0 件」→ 黙って skip に化ける。
+			// それ以外の失敗は本体と同じく skip + 記録（プロファイル固有。即停止にはしない）。
+			if suffix != "" && errors.Is(err, fs.ErrNotExist) {
+				continue
 			}
-			continue // -wal / -shm は存在しないこともある
+			cleanup()
+			return "", nil, accessSkipError(profile, "読み取れません", s, err)
 		}
 		dst := filepath.Join(tmpdir, "Cookies"+suffix)
 		if err := os.WriteFile(dst, data, 0o600); err != nil {
@@ -352,7 +396,7 @@ func copyCookieDB(src string) (string, func(), error) {
 func extractCookies(profile string) ([]cookieEntry, error) {
 	sweepStaleCookieDirs() // ③: 前回の実行が強制終了で残したものを先に片付ける
 
-	password, err := getKeychainPassword()
+	password, err := keychainPassword()
 	if err != nil {
 		return nil, err
 	}
@@ -365,15 +409,22 @@ func extractCookies(profile string) ([]cookieEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	dbPath, cleanup, err := copyCookieDB(src)
+	dbPath, cleanup, err := copyCookieDB(profile, src)
 	if err != nil {
 		return nil, err
 	}
 	defer cleanup()
 
+	// ここから先の失敗（壊れた DB・sqlite 以外のファイル・古いスキーマ・全件の復号失敗）は
+	// Keychain の鍵を取れた後の**このプロファイル固有**の問題なので、skip + 理由の記録にする
+	// （1 つ壊れたプロファイルで自動検出全体を止めない。profile.go の profileSkipError）。
+	broken := func(format string, a ...any) error {
+		return &profileSkipError{msg: fmt.Sprintf("プロファイル %q の Cookie DB を読めません: ", profile) + fmt.Sprintf(format, a...), broken: true}
+	}
+
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return nil, err
+		return nil, broken("%v", err)
 	}
 	defer db.Close()
 
@@ -385,28 +436,43 @@ func extractCookies(profile string) ([]cookieEntry, error) {
 
 	rows, err := db.Query(`SELECT host_key, name, value, encrypted_value FROM cookies`)
 	if err != nil {
-		return nil, fmt.Errorf("cookies テーブルの読み取りに失敗: %w", err)
+		return nil, broken("cookies テーブルの読み取りに失敗: %v", err)
 	}
 	defer rows.Close()
 
 	var out []cookieEntry
+	var decryptTried, decryptOK int
+	var firstDecryptErr error
 	for rows.Next() {
 		var host, name, plainValue string
 		var enc []byte
 		if err := rows.Scan(&host, &name, &plainValue, &enc); err != nil {
-			return nil, err
+			return nil, broken("%v", err)
 		}
 		value := plainValue
 		if value == "" && len(enc) > 0 {
-			v, derr := decryptValue(enc, key, metaVersion)
+			decryptTried++
+			v, derr := decryptValue(enc, key, metaVersion, host)
 			if derr != nil {
+				if firstDecryptErr == nil {
+					firstDecryptErr = derr
+				}
 				continue // 1 件の復号失敗で全体を止めない
 			}
+			decryptOK++
 			value = v
 		}
 		out = append(out, cookieEntry{host: host, name: name, value: value})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, broken("%v", err)
+	}
+	// 🚨 全件失敗を「Cookie 0 件」に化けさせない（鍵違い等。1 件だけの失敗は従来どおり続行）。
+	if decryptTried > 0 && decryptOK == 0 {
+		return nil, broken("暗号化された Cookie %d 件の復号にすべて失敗しました（Keychain の鍵が合っていない可能性）: %v",
+			decryptTried, firstDecryptErr)
+	}
+	return out, nil
 }
 
 // cookieHostMatches は Cookie の host_key が対象ホストに送信されるべきか判定する。

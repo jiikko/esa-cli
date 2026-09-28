@@ -32,7 +32,7 @@ brews:
       name: homebrew-tap
     directory: Formula
     homepage: "https://github.com/jiikko/esa-cli"
-    description: "社内 esa (esa.io) を Chrome cookie 認証で参照する読み取り専用 CLI"
+    description: "esa (esa.io) のチーム記事を Chrome cookie 認証で参照する読み取り専用 CLI"
     license: "MIT"
     test: |
       assert_match "esa - ", shell_output("#{bin}/esa --help")

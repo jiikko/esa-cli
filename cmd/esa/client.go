@@ -9,7 +9,38 @@ import (
 	"time"
 )
 
-const userAgent = "esa-client (Chrome cookie session; internal doc reader)"
+const userAgent = "esa-cli (Chrome cookie session; read-only)"
+
+// maxResponseBytes はレスポンス本文の上限。超えたら切り詰めずにエラーにする
+// （切り詰めた Markdown / JSON を正常な結果として出さないため）。
+const maxResponseBytes = 20 * 1024 * 1024
+
+// errRedirectBlocked は scheme / ホストの変わるリダイレクトを止めたことを示す。
+// 未ログインの esa は SSO 等の別ホストへ飛ばすことがあるため、authOK はこれを未認証として扱う。
+type errRedirectBlocked struct{ msg string }
+
+func (e *errRedirectBlocked) Error() string { return e.msg }
+
+// errTooManyRedirects は同一ホスト内のリダイレクトが上限を超えたことを示す（ループ等）。
+type errTooManyRedirects struct{ n int }
+
+func (e *errTooManyRedirects) Error() string {
+	return fmt.Sprintf("リダイレクトが多すぎます（%d 回）", e.n)
+}
+
+// errHTTPStatus は 200 / 401 / 403 / 404 以外のステータスを受け取ったことを示す。
+// authOK はコードで「チーム全体の失敗（429・5xx）」と「プロファイル固有の失敗（その他）」を分ける。
+type errHTTPStatus struct {
+	code int
+	url  string
+}
+
+func (e *errHTTPStatus) Error() string {
+	if e.code == http.StatusTooManyRequests {
+		return fmt.Sprintf("レート制限（429）: %s。しばらく待って再実行してください", e.url)
+	}
+	return fmt.Sprintf("予期しないステータス %d: %s", e.code, e.url)
+}
 
 // newHTTPClient は資格情報を持ち越さないリダイレクト方針を持つクライアントを作る。
 //
@@ -29,15 +60,15 @@ func newHTTPClient() *http.Client {
 			}
 			orig := via[0].URL
 			if req.URL.Scheme != orig.Scheme {
-				return fmt.Errorf("リダイレクト先の scheme が変わりました（%s → %s）。資格情報を送らずに中止します",
-					orig.Scheme, req.URL.Scheme)
+				return &errRedirectBlocked{fmt.Sprintf("リダイレクト先の scheme が変わりました（%s → %s）。資格情報を送らずに中止します",
+					orig.Scheme, req.URL.Scheme)}
 			}
 			if req.URL.Host != orig.Host {
-				return fmt.Errorf("リダイレクト先のホストが変わりました（%s → %s）。資格情報を送らずに中止します",
-					orig.Host, req.URL.Host)
+				return &errRedirectBlocked{fmt.Sprintf("リダイレクト先のホストが変わりました（%s → %s）。資格情報を送らずに中止します",
+					orig.Host, req.URL.Host)}
 			}
 			if len(via) >= 5 {
-				return fmt.Errorf("リダイレクトが多すぎます（%d 回）", len(via))
+				return &errTooManyRedirects{n: len(via)}
 			}
 			return nil
 		},
@@ -71,6 +102,16 @@ func (e *errSessionExpired) Error() string {
 		e.url, strings.TrimPrefix(strings.TrimPrefix(e.url, "https://"), "http://"))
 }
 
+// errNotFound は 404 を受け取ったことを示す。
+//
+// 🚨 非公開チームでは未認証のとき全パスが 404 になるため、authOK はこれを
+// 「未ログイン」として扱う（型で判定する。メッセージ文字列で判定しない）。
+type errNotFound struct {
+	url string
+}
+
+func (e *errNotFound) Error() string { return fmt.Sprintf("見つかりません（404）: %s", e.url) }
+
 // get は path を GET し、生のレスポンスボディと Content-Type を返す。
 // ステータス・ログインHTML・エラー JSON をここで検出する。
 func (c *client) get(path string) (body []byte, contentType string, err error) {
@@ -89,10 +130,6 @@ func (c *client) get(path string) (body []byte, contentType string, err error) {
 	}
 	defer resp.Body.Close()
 
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 20*1024*1024))
-	if err != nil {
-		return nil, "", err
-	}
 	ct := resp.Header.Get("Content-Type")
 
 	switch resp.StatusCode {
@@ -101,11 +138,14 @@ func (c *client) get(path string) (body []byte, contentType string, err error) {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return nil, "", &errSessionExpired{url: url}
 	case http.StatusNotFound:
-		return nil, "", fmt.Errorf("見つかりません（404）: %s", url)
-	case http.StatusTooManyRequests:
-		return nil, "", fmt.Errorf("レート制限（429）: %s。しばらく待って再実行してください", url)
-	default:
-		return nil, "", fmt.Errorf("予期しないステータス %d: %s", resp.StatusCode, url)
+		return nil, "", &errNotFound{url: url}
+	default: // 429 を含む
+		return nil, "", &errHTTPStatus{code: resp.StatusCode, url: url}
+	}
+
+	b, err := readLimitedBody(resp.Body, url)
+	if err != nil {
+		return nil, "", err
 	}
 
 	// 200 でもログインページ HTML が返ることがある（Rails のセッション切れ）。
@@ -113,6 +153,22 @@ func (c *client) get(path string) (body []byte, contentType string, err error) {
 		return nil, "", &errSessionExpired{url: url}
 	}
 	return b, ct, nil
+}
+
+// readLimitedBody は本文を上限まで読む。上限 +1 まで読み、超えたら切り詰めずにエラーにする。
+func readLimitedBody(r io.Reader, url string) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("レスポンスの読み取りに失敗（%s）: %w", url, err)
+	}
+	if len(b) > maxResponseBytes {
+		return nil, fmt.Errorf("レスポンスがサイズ上限（%d MiB）を超えました: %s", maxResponseBytes>>20, url)
+	}
+	return b, nil
+}
+
+func rateLimitError(url string) error {
+	return &errHTTPStatus{code: http.StatusTooManyRequests, url: url}
 }
 
 // getJSON は path を GET し JSON をデコードする。{"error":...} も検出する。

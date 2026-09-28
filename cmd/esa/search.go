@@ -7,6 +7,7 @@ import (
 	stdhtml "html"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -44,10 +45,18 @@ func (c *client) search(teamName, query string, perPage, page int, token string,
 		return nil, err
 	}
 	if enrich {
-		c.enrichResults(results, 6)
+		if failed, firstErr := c.enrichResults(results, 6); failed > 0 {
+			// 基本情報（number/title/url）のみで残す方針は維持する。rc は 0 のまま。
+			// ただし黙って空欄にしない（日付・author が空なのが取得失敗だと分かるように）。
+			fmt.Fprintf(os.Stderr, "警告: %d/%d 件の詳細取得に失敗しました（該当行は number/title/url のみ）。最初のエラー: %v\n",
+				failed, len(results), firstErr)
+		}
 	}
 	return results, nil
 }
+
+// esaAPIBase は公式 API の起点。テストでは httptest サーバへ差し替える。
+var esaAPIBase = "https://api.esa.io"
 
 // searchViaAPI は api.esa.io の公式 API を使う（ESA_TOKEN 指定時のみ）。詳細まで一括で返る。
 func searchViaAPI(teamName, query string, perPage, page int, token string) ([]searchResult, error) {
@@ -55,7 +64,7 @@ func searchViaAPI(teamName, query string, perPage, page int, token string) ([]se
 	q.Set("q", query)
 	q.Set("per_page", strconv.Itoa(perPage))
 	q.Set("page", strconv.Itoa(page))
-	api := fmt.Sprintf("https://api.esa.io/v1/teams/%s/posts?%s", teamName, q.Encode())
+	api := fmt.Sprintf("%s/v1/teams/%s/posts?%s", esaAPIBase, teamName, q.Encode())
 
 	req, _ := http.NewRequest(http.MethodGet, api, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -70,8 +79,15 @@ func searchViaAPI(teamName, query string, perPage, page int, token string) ([]se
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, fmt.Errorf("公式 API: トークンが無効です（401）。ESA_TOKEN を確認してください")
 	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return nil, fmt.Errorf("公式 API: %w", rateLimitError(api))
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("公式 API: 予期しないステータス %d", resp.StatusCode)
+	}
+	body, err := readLimitedBody(resp.Body, api) // get() と同じ上限（client.go）
+	if err != nil {
+		return nil, fmt.Errorf("公式 API: %w", err)
 	}
 	var out struct {
 		Posts []struct {
@@ -92,7 +108,7 @@ func searchViaAPI(teamName, query string, perPage, page int, token string) ([]se
 			} `json:"updated_by"`
 		} `json:"posts"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("公式 API: JSON デコード失敗: %w", err)
 	}
 	results := make([]searchResult, 0, len(out.Posts))
@@ -176,15 +192,17 @@ func parseSearchHTML(body []byte, baseURL string) ([]searchResult, error) {
 }
 
 // enrichResults は各記事の /posts/N.json を並行取得し、日付・author 等を埋める。
-func (c *client) enrichResults(results []searchResult, concurrency int) {
+// 取得に失敗した記事は基本情報のみで残し、失敗件数と最初に記録されたエラーを返す。
+func (c *client) enrichResults(results []searchResult, concurrency int) (failed int, firstErr error) {
 	if len(results) == 0 {
-		return
+		return 0, nil
 	}
 	if concurrency < 1 {
 		concurrency = 1
 	}
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
+	var mu sync.Mutex // failed / firstErr を守る
 	for i := range results {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -193,12 +211,19 @@ func (c *client) enrichResults(results []searchResult, concurrency int) {
 			defer func() { <-sem }()
 			post, err := c.postJSON(results[i].Number, false)
 			if err != nil {
-				return // 取得失敗した記事は基本情報のみで残す
+				mu.Lock()
+				failed++
+				if firstErr == nil {
+					firstErr = fmt.Errorf("記事 %d: %w", results[i].Number, err)
+				}
+				mu.Unlock()
+				return
 			}
 			applyPostJSON(&results[i], post)
 		}(i)
 	}
 	wg.Wait()
+	return failed, firstErr
 }
 
 // applyPostJSON は /posts/N.json のフィールドを searchResult に反映する。

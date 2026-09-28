@@ -231,6 +231,14 @@ func configSet(key, value string) error {
 	if !configKeys[key] {
 		return &usageError{fmt.Sprintf("エラー: 不明なキー %q（指定可能: profile, team）", key)}
 	}
+	if key == "team" {
+		// 書き込む前に弾く（不正な team を保存すると以後の全コマンドが使い方エラーになる）。
+		norm, err := validateTeam(value)
+		if err != nil {
+			return err
+		}
+		value = norm // 正規化（小文字化）した値を保存する
+	}
 	fc := loadFileConfig()
 	switch key {
 	case "profile":
@@ -256,6 +264,10 @@ func configInit(args []string) error {
 		return err
 	}
 
+	// team を先に正規化しておく（下で config.yml へ保存するのはこの値）。
+	if err := cfg.requireTeam(); err != nil {
+		return err
+	}
 	// profile を auto にして実際の検出を走らせ、使われるプロファイル名を得る。
 	cfg.profile = profileAuto
 	name, _, err := resolveProfileClient(cfg)

@@ -14,6 +14,7 @@ import (
 	"html"
 	"io"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -79,10 +80,10 @@ func newFlagSet(name string) *flag.FlagSet {
 }
 
 // topUsage は `esa` / `esa --help` の出力（サブコマンド一覧 + 1 行概要 + 共通事項）。
-const topUsage = `esa - <team>.esa.io（社内 esa）ドキュメント参照 CLI（読み取り専用 / Chrome cookie 認証）
+const topUsage = `esa - <team>.esa.io ドキュメント参照 CLI（読み取り専用 / Chrome cookie 認証）
 
 概要:
-  社内 esa の記事を検索して本文を読むためのコマンド。ネット上に無い社内情報（手順書・規程・
+  esa チームの記事を検索して本文を読むためのコマンド。公開 Web に無いチーム内の情報（手順書・規程・
   インシデント記録・設計メモ等）を調べるのに使う。更新系は無い（読み取り専用）。
   認証は自動：ログイン済みの Chrome プロファイルを自動検出するので鍵やトークンの指定は不要。
   基本は 2 段階 — esa search '<クエリ>' で記事番号を得て、esa show <番号> で本文を読む。
@@ -332,14 +333,42 @@ func exitCodeFor(err error) int {
 }
 
 // requireTeam は team が未設定なら使い方エラーを返す（特定チームに依存させないため既定を持たない）。
-func (c config) requireTeam() error {
+// 検証を通った team は正規化（小文字化）した値で c.team を置き換える。以後の baseURL・
+// キャッシュのファイル名はこの値から作られる。
+func (c *config) requireTeam() error {
 	if strings.TrimSpace(c.team) == "" {
 		return &usageError{"エラー: チーム名(team)が未設定です。esa の https://<team>.esa.io の <team> を指定してください:\n" +
 			"  esa config set team <team>   （推奨: 一度設定すれば以後不要）\n" +
 			"  export ESA_TEAM=<team>\n" +
 			"  esa <コマンド> -team <team> ..."}
 	}
+	team, err := validateTeam(c.team)
+	if err != nil {
+		return err
+	}
+	c.team = team
 	return nil
+}
+
+var teamNameRe = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// validateTeam は team を小文字に正規化し、サブドメインとして安全な形かを確かめる。
+// 返り値の正規化済みの値を使うこと（baseURL・キャッシュのファイル名・config.yml に保存する値）。
+//
+// 🚨 team は baseURL の host（https://<team>.esa.io）とキャッシュのファイル名にそのまま入る。
+// `x.example#` のような値だと host が外部ホストになり、.esa.io の Cookie をそこへ送りうる。
+// `/` が入るとキャッシュのパスが cache/ の外を指す。
+// 大文字は小文字へ正規化して受け付ける。esa のセッション Cookie の host_key は `.esa.io`
+// （ドメイン Cookie。2026-09-28 に実 Cookie DB の全プロファイルで確認）なので、大文字の team
+// でも以前から認証は通っていた。拒否すると既存の設定を壊す。
+func validateTeam(team string) (string, error) {
+	norm := strings.ToLower(team)
+	if teamNameRe.MatchString(norm) {
+		return norm, nil
+	}
+	return "", &usageError{fmt.Sprintf(
+		"エラー: チーム名(team) %q が不正です。https://<team>.esa.io の <team> 部分だけを、英字・数字・ハイフンで指定してください。",
+		team)}
 }
 
 // buildCookieClient は実効プロファイルを解決してクライアントを構築する（auto なら自動検出）。
@@ -370,6 +399,12 @@ func cmdSearch(args []string) error {
 	query := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if query == "" {
 		return &usageError{"エラー: 検索クエリを指定してください。\n使い方: esa search [オプション] <クエリ...>\n例:     esa search 'in:設計 キーワード'\n詳細:   esa search --help"}
+	}
+	if perPage < 1 {
+		return &usageError{fmt.Sprintf("エラー: -n は 1 以上を指定してください（指定値: %d。上限 100 を超える値は 100 に丸めます）\n詳細:   esa search --help", perPage)}
+	}
+	if page < 1 {
+		return &usageError{fmt.Sprintf("エラー: -page は 1 以上を指定してください（指定値: %d）\n詳細:   esa search --help", page)}
 	}
 	if perPage > 100 {
 		perPage = 100
@@ -585,8 +620,10 @@ func parseNumberArg(args []string, cmd string) (int, error) {
 	raw = strings.TrimSuffix(raw, ".md")
 	raw = strings.TrimSuffix(raw, ".json")
 	n, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil {
-		return 0, fmt.Errorf("記事番号として解釈できません: %q", args[0])
+	if err != nil || n < 1 {
+		return 0, &usageError{fmt.Sprintf(
+			"エラー: 記事番号として解釈できません: %q\n使い方: esa %s <番号|URL>\n詳細:   esa %s --help",
+			args[0], cmd, cmd)}
 	}
 	return n, nil
 }

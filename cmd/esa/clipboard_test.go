@@ -135,6 +135,7 @@ func TestParseTargetArgsReportsHelp(t *testing.T) {
 }
 
 func TestMetaCopyRejectsJSONAndComments(t *testing.T) {
+	blockRealBackends(t) // 退行して通信へ進んでも実環境（Keychain・実 esa）に届かせない
 	for _, args := range [][]string{{"-copy", "-json", "1"}, {"1", "-copy", "-comments"}} {
 		var ue *usageError
 		if err := cmdMeta(args); !errors.As(err, &ue) {

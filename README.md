@@ -249,6 +249,23 @@ esa meta -copy-title 28025                                    # タイトルの�
 - `-copy` と `-copy-title` はどちらか一方だけ。`-json` / `-comments` とは併用できない（rc=2）
 - クリップボードへの書き込みには `osascript` を使う（`pbcopy` はテキストしか入れられないため）
 
+## リリース
+
+1. この repo には CI が無いので、手元で `gofmt -l .`（出力なし）/ `go vet ./...` / `go test -race ./...` が通ることを確かめてから tag を打つ（`git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`）
+2. `curl -sL https://github.com/jiikko/esa-cli/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256` の値で、
+   [jiikko/homebrew-tap](https://github.com/jiikko/homebrew-tap) の `Formula/esa.rb` の `url` と `sha256` を更新して push する
+3. **手元で入れ直して疎通を確かめる**（tag・tap・ソースからのビルドのどれかが壊れていても、ここまで来ないと分からない）
+
+```sh
+brew update
+brew uninstall jiikko/tap/esa
+brew install jiikko/tap/esa
+readlink -f "$(command -v esa)"   # 新しい版の Cellar を指しているか
+esa meta <記事番号>                   # 認証（Keychain → Cookie）と記事の取得
+esa meta -copy <記事 URL>             # 紹介カードのコピー（クリップボードに HTML とテキストが入る）
+ls ~/Library/Caches/esa-cli/extract   # 空であること（Cookie DB の一時コピーが残っていない）
+```
+
 ## スクリプト・自動化から使う
 
 典型的な流れは「検索して番号を得る → 本文を読む」で、AI エージェントやシェルスクリプトからも同じ:

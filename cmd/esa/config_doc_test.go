@@ -254,3 +254,42 @@ func TestConfigDocRedTeamRegressions(t *testing.T) {
 		}
 	})
 }
+
+// issue 011 の red team 2 周目の回帰テスト。
+func TestConfigDocRedTeamRegressions2(t *testing.T) {
+	t.Run("キーが 1 つだけのファイルで消しても、以後 flow 形式にならず、コメントは先頭に残す", func(t *testing.T) {
+		path := setupConfig(t, "# 自分用のメモ\nprofile: p\n", 0o600)
+		if err := saveFileConfig(fileConfig{}); err != nil {
+			t.Fatal(err)
+		}
+		if out := readFile(t, path); !strings.HasPrefix(out, "# 自分用のメモ") {
+			t.Errorf("コメントが先頭にない:\n%s", out)
+		}
+		if err := saveFileConfig(fileConfig{Team: "t"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := appendSyncTarget(path, syncTarget{Name: "a", Category: "C", Dir: "/x"}); err != nil {
+			t.Fatal(err)
+		}
+		out := readFile(t, path)
+		if strings.Contains(out, "{") || !strings.HasPrefix(out, "# 自分用のメモ") || !strings.Contains(out, "team: t\n") || !strings.Contains(out, "sync:\n") {
+			t.Errorf("flow 形式に詰まったか、コメントが移った:\n%s", out)
+		}
+	})
+	t.Run("読み取り専用の config.yml は上書きしない", func(t *testing.T) {
+		body := "team: foo\n"
+		path := setupConfig(t, body, 0o400)
+		if err := saveFileConfig(fileConfig{Team: "bar"}); err == nil || !strings.Contains(err.Error(), "書き込みできない") {
+			t.Errorf("読み取り専用のファイルに書いた / 理由が違う: %v", err)
+		}
+		if got := readFile(t, path); got != body {
+			t.Errorf("書き換えた:\n%s", got)
+		}
+	})
+	t.Run("最上位がリストなら、マッピングでないことを伝える", func(t *testing.T) {
+		setupConfig(t, "- a\n- b\n", 0o600)
+		if err := saveFileConfig(fileConfig{Team: "t"}); err == nil || !strings.Contains(err.Error(), "最上位がマッピング") {
+			t.Errorf("エラーの理由が違う: %v", err)
+		}
+	})
+}

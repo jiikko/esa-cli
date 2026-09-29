@@ -28,13 +28,6 @@ const configFileHeader = "# esa-cli 設定ファイル（esa config set / esa sy
 // 空・コメントだけの内容なら、そのコメントを持つ空のマッピングを返す（無ければ既定のヘッダ）。
 func parseConfigDoc(data []byte) (*yaml.Node, error) {
 	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")) // BOM（残すとコメントだけのファイルのコメントを取りこぼす）
-	// profile / team の読み込み（loadFileConfig）と同じ読み方で読めるかを先に確かめる。重複したキー・team: [a] のような形は
-	// ノードとしては読めてしまうが、loadFileConfig は失敗する。ここで止めないと、sync add がそのまま書き、
-	// 重複した sync: の 2 つ目以降が黙って読まれなくなる（issue 011 の red team）。
-	var fc fileConfig
-	if err := yaml.Unmarshal(data, &fc); err != nil {
-		return nil, err
-	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	var doc yaml.Node
 	if err := dec.Decode(&doc); err != nil && !errors.Is(err, io.EOF) {
@@ -63,6 +56,15 @@ func parseConfigDoc(data []byte) (*yaml.Node, error) {
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
 		return nil, errors.New("最上位がマッピング（key: value の並び）ではありません")
 	}
+	// profile / team の読み込み（loadFileConfig）と同じ読み方で読めるかを確かめる。重複したキー・team: [a] のような形は
+	// ノードとしては読めてしまうが、loadFileConfig は失敗する。ここで止めないと、sync add がそのまま書き、
+	// 重複した sync: の 2 つ目以降が黙って読まれなくなる（issue 011 の red team）。
+	var fc fileConfig
+	if err := yaml.Unmarshal(data, &fc); err != nil {
+		return nil, err
+	}
+	// 最上位は常にブロック形式で書く。空のマッピングは {} と書かれ、読み直すと flow 形式のまま以後の書き戻しが 1 行に詰まる。
+	doc.Content[0].Style &^= yaml.FlowStyle
 	// sync.yml の中身をそのまま貼った形。黙って読むと sync の対象が 0 件になる。
 	if mappingValue(doc.Content[0], "targets") != nil {
 		return nil, errors.New("最上位に targets: があります（v0.1.8 までの sync.yml の書き方です。targets: を sync: に書き換えてください）")
@@ -85,6 +87,11 @@ func readConfigDoc(path string) (*yaml.Node, error) {
 
 // writeConfigDoc は文書を config.yml に書く。validate で書く内容を検査してから、同じディレクトリの一時ファイル経由で置き換える。
 func writeConfigDoc(path string, doc *yaml.Node, validate func([]byte) error) error {
+	// 最後のキーを消してマッピングが空になったら、末尾へ付け替えたコメントを文書の先頭へ回す（{} の後ろに回さない）。
+	if top := doc.Content[0]; len(top.Content) == 0 && top.FootComment != "" {
+		doc.HeadComment = joinComments(doc.HeadComment, top.FootComment)
+		top.FootComment = ""
+	}
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2) // 既定の 4 だと、手で書く 2 桁の YAML と混ざる
@@ -117,6 +124,11 @@ func writeConfigDoc(path string, doc *yaml.Node, validate func([]byte) error) er
 	perm := fs.FileMode(0o600)
 	if fi, err := os.Stat(path); err == nil {
 		perm = fi.Mode().Perm() // 既存のファイルの権限は保つ（以前の os.WriteFile と同じ）
+		// 🚨 読み取り専用のファイルは書かない。rename で置き換えるので、書けない権限でも上書きできてしまう
+		// （以前の os.WriteFile は EACCES で止まっていた。issue 011 の red team）。
+		if perm&0o200 == 0 {
+			return fmt.Errorf("%s は書き込みできない権限（%v）です", path, perm)
+		}
 	}
 	return writeFileAtomic(path, out, perm)
 }

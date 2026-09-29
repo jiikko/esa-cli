@@ -59,12 +59,12 @@ func parseColumns(spec string) ([]string, error) {
 			continue
 		}
 		if _, ok := columnRegistry[name]; !ok {
-			return nil, fmt.Errorf("不明なカラム %q。指定可能: %s", name, availableColumns())
+			return nil, &usageError{fmt.Sprintf("エラー: 不明なカラム %q。指定可能: %s\n詳細:   esa search --help", name, availableColumns())}
 		}
 		cols = append(cols, name)
 	}
 	if len(cols) == 0 {
-		return nil, fmt.Errorf("有効なカラムがありません")
+		return nil, &usageError{"エラー: 有効なカラムがありません（-c にカラム名をカンマ区切りで指定）\n詳細:   esa search --help"}
 	}
 	return cols, nil
 }

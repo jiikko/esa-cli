@@ -27,3 +27,11 @@ esa への通信は起きていない。
 ## 経緯
 
 issue 005 の敵対的レビューで見つかり、範囲外として 005 の「対応せず記録に留めたもの」の 4 に残していた。005 を閉じる際に起票した。
+
+## 進捗・結果（2026-09-29）
+
+- [x] `parseColumns` の 2 つのエラーを `usageError` に（`エラー: ` の接頭辞と `詳細: esa search --help` の案内つき）
+- [x] テスト `TestParseColumnsErrorsAreUsageErrors`（rc=2・書式・`cmdSearch` まで通しても team の検査より前に止まる）
+- 実物で確認: `esa search -c nosuch q` → rc=2 / `esa search -c , q` → rc=2
+- 変異で red: 不明なカラムを `fmt.Errorf` に戻す / 空の指定を `fmt.Errorf` に戻す（2 本）
+- 敵対的レビュー（read-only のサブエージェント）: この修正は壊せなかった

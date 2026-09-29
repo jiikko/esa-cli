@@ -140,6 +140,13 @@ func cmdConfig(args []string) error {
 	if len(args) > 0 {
 		sub = args[0]
 	}
+	// get / set の引数は FlagSet を通さずに読むので、--help が引数に来たらここで拾う。
+	// 拾わないと、get では「不明なキー "--help"」になり、set profile --help では profile に "--help" を保存していた（issue 009）。
+	// 設定ファイルが壊れていても出せるよう、set の読み込みの検査より前に置く。
+	if (sub == "get" || sub == "set") && containsHelpArg(args[1:]) {
+		fmt.Fprint(os.Stdout, configHelp)
+		return nil
+	}
 	switch sub {
 	case "", "show":
 		return configShow()
@@ -177,6 +184,26 @@ func cmdConfig(args []string) error {
 	default:
 		return &usageError{fmt.Sprintf("エラー: 不明なサブコマンド %q\n%s", sub, configHelp)}
 	}
+}
+
+// containsHelpArg は get / set の引数にヘルプの要求があるかを返す。
+//
+// flag パッケージがヘルプとみなす 4 つの綴り（-h / -help / --h / --help）はどの位置でもヘルプにする（他のサブコマンドと揃える）。
+// 値として正当にならないため: team はサブドメインなので - で始められない（DNS のラベルの規則）、profile は Chrome の
+// プロファイルのディレクトリ名（Default / Profile 3 等）で表示名ではない。
+// help はキーの位置だけ（値の位置では team 名として正当: help.esa.io）。
+func containsHelpArg(args []string) bool {
+	for i, a := range args {
+		switch a {
+		case "-h", "-help", "--h", "--help":
+			return true
+		case "help":
+			if i == 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func configShow() error {

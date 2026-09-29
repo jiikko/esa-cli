@@ -83,3 +83,26 @@ func TestApplyPostJSON(t *testing.T) {
 		t.Errorf("空の name で既存のタイトルを消した: %q", keep.Title)
 	}
 }
+
+// -c の誤りは使い方の誤り（rc=2）として返すこと（README の終了コードの契約。issue 008）。
+func TestParseColumnsErrorsAreUsageErrors(t *testing.T) {
+	for _, spec := range []string{"number,nosuch", " , "} {
+		_, err := parseColumns(spec)
+		if code := exitCodeFor(err); code != 2 {
+			t.Errorf("parseColumns(%q) の終了コードが %d（2 のはず）: %v", spec, code, err)
+		}
+		if err == nil || !strings.HasPrefix(err.Error(), "エラー: ") || !strings.Contains(err.Error(), "esa search --help") {
+			t.Errorf("parseColumns(%q) のメッセージが他の使い方エラーの書式と違う: %v", spec, err)
+		}
+	}
+	// 検索の本体まで通しても 2 になり、esa へ問い合わせる前に止まること（team を指定しないので、
+	// カラムの検査より先に team の検査が走れば別のエラーになる）
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	resetFileConfigCache(t) // 他のテストが読んだ config.yml のキャッシュを使わない
+	t.Setenv("ESA_TEAM", "")
+	var err error
+	captureStdio(t, func() { err = cmdSearch([]string{"-c", "nosuch", "q"}) })
+	if exitCodeFor(err) != 2 || !strings.Contains(err.Error(), "不明なカラム") {
+		t.Errorf("esa search -c nosuch が rc=2 の不明なカラムにならない: %v", err)
+	}
+}

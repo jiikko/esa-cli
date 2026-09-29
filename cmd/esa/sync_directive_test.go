@@ -20,7 +20,7 @@ func TestExtractSyncDirective(t *testing.T) {
 		{"前の空行は全部落とす", "text\n\n\n<!-- esa-sync: a.md -->\n\n", "a.md", "text\n", true, false},
 		{"本文が指定だけ", "<!-- esa-sync: a.md -->\n", "a.md", "", true, false},
 		{"後ろにゼロ幅だけの行", "text\n<!-- esa-sync: a.md -->\n​\n", "a.md", "text\n", true, false},
-		{"本文の途中の同じ形は触らない", "<!-- esa-sync: a.md -->\ntext\n", "", "<!-- esa-sync: a.md -->\ntext\n", false, false},
+		{"本文の途中の同じ形は触らない", "text\n<!-- esa-sync: a.md -->\nmore\n", "", "text\n<!-- esa-sync: a.md -->\nmore\n", false, false},
 		{"コードブロックの中は触らない", "```\n<!-- esa-sync: a.md -->\n```\n", "", "```\n<!-- esa-sync: a.md -->\n```\n", false, false},
 		{"全角のコロン", "text\n<!-- esa-sync： a.md -->\n", "", "", false, true},
 		{"大文字", "text\n<!-- ESA-SYNC: a.md -->\n", "", "", false, true},
@@ -32,6 +32,14 @@ func TestExtractSyncDirective(t *testing.T) {
 		{"閉じ忘れ", "text\n<!-- esa-sync: a.md\n", "", "", false, true},
 		{"指定が 2 つ", "text\n<!-- esa-sync: a.md -->\n<!-- esa-sync: b.md -->\n", "", "", false, true},
 		{"指定が 2 つ（間に空行）", "<!-- esa-sync: a.md -->\n\n<!-- esa-sync: b.md -->\n", "", "", false, true},
+		// 実装への red team で見つかった見逃し
+		{"区切りが空白", "text\n<!-- esa sync: a.md -->\n", "", "", false, true},
+		{"Markdown のエスケープ", "text\n<!-- esa\\-sync: a.md -->\n", "", "", false, true},
+		{"U+2010 のハイフン", "text\n<!-- esa\u2010sync: a.md -->\n", "", "", false, true},
+		{"先頭に書いた指定", "<!-- esa-sync: s/SKILL.md -->\n---\nname: s\n---\n", "", "", false, true},
+		{"最後の行が esa-sync を含む説明の文（コメントでない）", "text\nuse esa-sync\n", "", "text\nuse esa-sync\n", false, false},
+		{"最後の行が esa-sync の URL", "text\nhttps://example.com/esa-sync を参照\n", "", "text\nhttps://example.com/esa-sync を参照\n", false, false},
+		{"直前の空白だけの行も落とす", "text\n   \n\u200b\n<!-- esa-sync: a.md -->\n", "a.md", "text\n", true, false},
 	}
 	for _, tc := range cases {
 		spec, rest, found, err := extractSyncDirective(tc.body)
@@ -110,7 +118,7 @@ func TestMapSyncFilesWithDirective(t *testing.T) {
 				{"R", "one", "b\n<!-- esa-sync: foo/SKILL.md -->\n"},
 				{"R", "two", "b\n<!-- esa-sync: FOO/skill.md -->\n"},
 			},
-			wantErr: "書き出し先の指定（esa-sync:）によるものがあります",
+			wantErr: "の書き出し先は本文の指定（esa-sync:）による",
 		},
 		{
 			name: "指定と今の規則の衝突",
@@ -118,15 +126,23 @@ func TestMapSyncFilesWithDirective(t *testing.T) {
 				{"R/foo", "SKILL", "b\n"},
 				{"R", "何か", "b\n<!-- esa-sync: foo/SKILL.md -->\n"},
 			},
-			wantErr: "書き出し先の指定（esa-sync:）によるものがあります",
+			wantErr: "の書き出し先は本文の指定（esa-sync:）による",
 		},
 		{
-			name: "指定のファイルと、他の記事のディレクトリの衝突",
+			name: "指定のファイルと、他の記事のディレクトリの衝突（どの記事が指定によるかを出す）",
 			posts: []in{
 				{"R", "x", "b\n<!-- esa-sync: foo.md -->\n"},
 				{"R/foo.md", "y", "b\n"},
 			},
-			wantErr: "ぶつかります",
+			wantErr: "（#1 の書き出し先は本文の指定による）",
+		},
+		{
+			name: "同じファイルの衝突で、指定による記事の番号を出す",
+			posts: []in{
+				{"R/foo", "SKILL", "b\n"},
+				{"R", "何か", "b\n<!-- esa-sync: foo/SKILL.md -->\n"},
+			},
+			wantErr: "#2 の書き出し先は本文の指定（esa-sync:）による",
 		},
 		{
 			name:  "対象のカテゴリの外は、指定があっても除く",

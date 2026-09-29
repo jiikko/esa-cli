@@ -437,8 +437,8 @@ func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files
 		key := syncPathKey(rel)
 		if prev, dup := owner[key]; dup {
 			how := "記事名を変えてください"
-			if byDirective[key] || found {
-				how = "書き出し先の指定（esa-sync:）によるものがあります。記事の複製で指定が写っていないか確かめ、指定か記事名を変えてください"
+			if by := directiveNumbers(byDirective[key], prev, found, numbers[i]); by != "" {
+				how = fmt.Sprintf("%s の書き出し先は本文の指定（esa-sync:）による。記事の複製で指定が写っていないか確かめ、指定か記事名を変えてください", by)
 			}
 			problems = append(problems, fmt.Sprintf("記事 #%d と #%d が同じファイル %s になります（大文字小文字・Unicode の正規化も区別しません。%s）",
 				prev, numbers[i], visible(rel), how))
@@ -458,8 +458,12 @@ func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files
 	for _, f := range files {
 		for d := path.Dir(f.rel); d != "."; d = path.Dir(d) {
 			if n, clash := owner[syncPathKey(d)]; clash {
-				problems = append(problems, fmt.Sprintf("記事 #%d のファイル %s と、記事 #%d のディレクトリ %s がぶつかります",
-					n, visible(d), f.number, visible(d)))
+				msg := fmt.Sprintf("記事 #%d のファイル %s と、記事 #%d のディレクトリ %s がぶつかります",
+					n, visible(d), f.number, visible(d))
+				if by := directiveNumbers(byDirective[syncPathKey(d)], n, f.byDirective, f.number); by != "" {
+					msg += fmt.Sprintf("（%s の書き出し先は本文の指定による）", by)
+				}
+				problems = append(problems, msg)
 			}
 		}
 	}
@@ -468,6 +472,19 @@ func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
 	return files, excluded, nil
+}
+
+// directiveNumbers は、衝突した 2 記事のうち書き出し先を本文の指定で決めたものの番号を「#1」「#1 と #2」の形で返す（無ければ空）。
+func directiveNumbers(aBy bool, a int, bBy bool, b int) string {
+	switch {
+	case aBy && bBy:
+		return fmt.Sprintf("#%d と #%d", a, b)
+	case aBy:
+		return fmt.Sprintf("#%d", a)
+	case bBy:
+		return fmt.Sprintf("#%d", b)
+	}
+	return ""
 }
 
 // syncPathKey はパスの同一性の鍵。macOS の既定のファイルシステム（APFS）は大文字小文字を区別せず、
@@ -685,6 +702,11 @@ func extractSyncDirective(body string) (spec, rest string, found bool, err error
 	if i < 0 {
 		return "", body, false, nil
 	}
+	// 先頭に置く間違いが一番起きやすい（skill の front matter の上に書く）。黙って見逃すと、指定の行が 1 行目に残り、
+	// 書き出し先も記事名の規則のままになる。本文の途中（コード例）は触らない。
+	if f := firstNonBlankLine(lines); f >= 0 && f != i && syncDirectiveRe.MatchString(lines[f]) {
+		return "", "", false, fmt.Errorf("書き出し先の指定 %q が本文の先頭にあります（本文の最後の行に書いてください）", visible(lines[f]))
+	}
 	m := syncDirectiveRe.FindStringSubmatch(lines[i])
 	if m == nil {
 		if looksLikeSyncDirective(lines[i]) {
@@ -695,11 +717,23 @@ func extractSyncDirective(body string) (spec, rest string, found bool, err error
 	if j := lastNonBlankLine(lines, i); j >= 0 && looksLikeSyncDirective(lines[j]) {
 		return "", "", false, fmt.Errorf("書き出し先の指定が 2 つあります（%q と %q。1 つにしてください）", visible(lines[j]), visible(lines[i]))
 	}
-	rest = strings.TrimRight(strings.Join(lines[:i], "\n"), "\n")
+	// 指定の直前の空の行（空白・見えない文字だけの行）も、指定を探すときと同じ定義で落とす
+	k := lastNonBlankLine(lines, i)
+	rest = strings.Join(lines[:k+1], "\n")
 	if rest != "" {
 		rest += "\n"
 	}
 	return m[1], rest, true, nil
+}
+
+// firstNonBlankLine は lines の中で最初の空でない行の添字を返す（無ければ -1）。
+func firstNonBlankLine(lines []string) int {
+	for k, l := range lines {
+		if strings.IndexFunc(l, func(r rune) bool { return !isSyncBlankRune(r) }) >= 0 {
+			return k
+		}
+	}
+	return -1
 }
 
 // lastNonBlankLine は lines[:end] の中で最後の空でない行の添字を返す（無ければ -1）。
@@ -717,7 +751,13 @@ func isSyncBlankRune(r rune) bool {
 	return unicode.Is(unicode.White_Space, r) || isInvisibleRune(r)
 }
 
-// looksLikeSyncDirective は、厳密な形でなくても書き出し先の指定を意図したと読める行か（NFKC・見えない文字を除く・小文字で比べる）。
+// syncDirectiveLooseRe は崩れた指定を拾うための緩い形（NFKC・見えない文字を除く・小文字にした後の行に当てる）。
+// esa と sync の間の区切りは、空白・ハイフンの類（U+2010〜2015・U+2212）・下線・Markdown のエスケープの \ を許す。
+var syncDirectiveLooseRe = regexp.MustCompile(`esa[\s\-\x{2010}-\x{2015}\x{2212}_\\]*sync`)
+
+// looksLikeSyncDirective は、厳密な形でなくても書き出し先の指定を意図したと読める行か。
+// HTML のコメント（<!-- か -->）を含む行に限る。限らないと、最後の行に「esa-sync を使う」のような説明の文があるだけの
+// 既存の記事で、以前は書けていた対象全体が止まる（issue 010 の実装への red team）。
 func looksLikeSyncDirective(line string) bool {
 	s := strings.ToLower(strings.Map(func(r rune) rune {
 		if isInvisibleRune(r) {
@@ -725,7 +765,10 @@ func looksLikeSyncDirective(line string) bool {
 		}
 		return r
 	}, norm.NFKC.String(line)))
-	return strings.Contains(s, "esa-sync") || strings.Contains(s, "esa_sync") || strings.Contains(s, "esasync")
+	if !strings.Contains(s, "<!--") && !strings.Contains(s, "-->") {
+		return false
+	}
+	return syncDirectiveLooseRe.MatchString(s)
 }
 
 // normalizeSyncBody は本文の改行を LF にそろえ、空でなければ末尾を改行で終える。

@@ -185,7 +185,8 @@ func syncList(args []string) error {
 type syncFile struct {
 	rel         string // dir からの相対パス（/ 区切り）
 	number      int
-	byDirective bool // 書き出し先を本文の指定（esa-sync:）で決めた
+	byDirective bool   // 書き出し先を本文の指定（esa-sync:）で決めた
+	catDir      string // 記事のカテゴリに対応するディレクトリ（dir からの相対。指定のある記事で、どこからが指定かを見分ける）
 	body        string
 	updatedBy   string
 	updatedAt   string
@@ -446,7 +447,7 @@ func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files
 		}
 		owner[key] = numbers[i]
 		byDirective[key] = found
-		f := syncFile{rel: rel, number: numbers[i], body: body, byDirective: found}
+		f := syncFile{rel: rel, number: numbers[i], body: body, byDirective: found, catDir: path.Join(dirParts...)}
 		if by, ok := p["updated_by"].(map[string]any); ok {
 			f.updatedBy, _ = by["screen_name"].(string)
 		}
@@ -460,7 +461,9 @@ func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files
 			if n, clash := owner[syncPathKey(d)]; clash {
 				msg := fmt.Sprintf("記事 #%d のファイル %s と、記事 #%d のディレクトリ %s がぶつかります",
 					n, visible(d), f.number, visible(d))
-				if by := directiveNumbers(byDirective[syncPathKey(d)], n, f.byDirective, f.number); by != "" {
+				// f のディレクトリ d がカテゴリから来ている（指定の部分でない）なら、f の指定は原因ではない
+				fromDirective := f.byDirective && !syncIsSameOrAncestor(d, f.catDir)
+				if by := directiveNumbers(byDirective[syncPathKey(d)], n, fromDirective, f.number); by != "" {
 					msg += fmt.Sprintf("（%s の書き出し先は本文の指定による）", by)
 				}
 				problems = append(problems, msg)
@@ -472,6 +475,12 @@ func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
 	return files, excluded, nil
+}
+
+// syncIsSameOrAncestor は d が p と同じか、p の上位のディレクトリか（syncPathKey で比べる）。
+func syncIsSameOrAncestor(d, p string) bool {
+	dk, pk := syncPathKey(d), syncPathKey(p)
+	return p != "" && (dk == pk || strings.HasPrefix(pk, dk+"/"))
 }
 
 // directiveNumbers は、衝突した 2 記事のうち書き出し先を本文の指定で決めたものの番号を「#1」「#1 と #2」の形で返す（無ければ空）。
@@ -693,7 +702,8 @@ var syncDirectiveRe = regexp.MustCompile(`^<!-- esa-sync: (.+) -->$`)
 // extractSyncDirective は正規化済みの本文（normalizeSyncBody の後）から書き出し先の指定を取り出し、
 // 指定の行を取り除いた本文を返す。指定が無ければ found=false で本文はそのまま。
 //
-// 🚨 見るのは最後の空でない行だけで、その行は加工せずに照合する（先頭の空白を削ると、字下げのコード例を指定として食う）。
+// 🚨 指定として読むのは最後の空でない行だけで、その行は加工せずに照合する（先頭の空白を削ると、字下げのコード例を指定として食う）。
+// 最初の空でない行が指定らしいときもエラーにする（skill の front matter の上に書く間違いが一番起きやすい）。本文の途中は見ない。
 // 厳密な形でないのに指定らしい行（全角のコロン・大文字・ゼロ幅の文字・引用など）はエラーにする。黙って今の規則に落とすと、
 // 書き出し先が変わったことに気づけず、指定の行も書き出したファイルに残る（issue 010 の red team）。
 func extractSyncDirective(body string) (spec, rest string, found bool, err error) {
@@ -704,7 +714,7 @@ func extractSyncDirective(body string) (spec, rest string, found bool, err error
 	}
 	// 先頭に置く間違いが一番起きやすい（skill の front matter の上に書く）。黙って見逃すと、指定の行が 1 行目に残り、
 	// 書き出し先も記事名の規則のままになる。本文の途中（コード例）は触らない。
-	if f := firstNonBlankLine(lines); f >= 0 && f != i && syncDirectiveRe.MatchString(lines[f]) {
+	if f := firstNonBlankLine(lines); f >= 0 && f != i && looksLikeSyncDirective(lines[f]) {
 		return "", "", false, fmt.Errorf("書き出し先の指定 %q が本文の先頭にあります（本文の最後の行に書いてください）", visible(lines[f]))
 	}
 	m := syncDirectiveRe.FindStringSubmatch(lines[i])
@@ -752,12 +762,19 @@ func isSyncBlankRune(r rune) bool {
 }
 
 // syncDirectiveLooseRe は崩れた指定を拾うための緩い形（NFKC・見えない文字を除く・小文字にした後の行に当てる）。
-// esa と sync の間の区切りは、空白・ハイフンの類（U+2010〜2015・U+2212）・下線・Markdown のエスケープの \ を許す。
-var syncDirectiveLooseRe = regexp.MustCompile(`esa[\s\-\x{2010}-\x{2015}\x{2212}_\\]*sync`)
+// 「esa」「区切り」「sync」「コロン」の並び。区切りは空白・ハイフンの類（U+2010〜2015・U+2212）・下線・\（Markdown のエスケープ）。
+//
+// 🚨 判定の軸は「コロンが続くか」に置く（コメントの記号やダッシュの種類で判定しない）。字面の崩し方は無限にあり、
+// 記号で限ると em dash の <!— … —> や、包み忘れの esa-sync: a.md を見逃し、区切りを緩めると
+// 「esa sync で同期する」のような普通の文を止める（issue 010 の実装への red team、2 周目）。
+//
+// 脅威モデル: 防ぎたいのは、記事を書いた本人が指定を書き損じたときに、黙って記事名の規則に戻ること（書き出し先が変わったことに
+// 気づけず、指定の行もファイルに残る）。悪意のある編集者は対象外（指定を書かずとも、記事名で同じ範囲に書ける）。
+// 検出しない形: esa と sync の文字を似た別の文字（キリル文字など）に置き換えたもの・コロンを落としたもの・1 行に収めずに
+// 複数行へ分けたもの。これらは指定とみなされず、記事名の規則で書かれる（dry-run の書き出し先と差分に出る）。
+var syncDirectiveLooseRe = regexp.MustCompile(`(^|[^a-z0-9])esa[\s\-\x{2010}-\x{2015}\x{2212}_\\]*sync\s*:`)
 
 // looksLikeSyncDirective は、厳密な形でなくても書き出し先の指定を意図したと読める行か。
-// HTML のコメント（<!-- か -->）を含む行に限る。限らないと、最後の行に「esa-sync を使う」のような説明の文があるだけの
-// 既存の記事で、以前は書けていた対象全体が止まる（issue 010 の実装への red team）。
 func looksLikeSyncDirective(line string) bool {
 	s := strings.ToLower(strings.Map(func(r rune) rune {
 		if isInvisibleRune(r) {
@@ -765,9 +782,6 @@ func looksLikeSyncDirective(line string) bool {
 		}
 		return r
 	}, norm.NFKC.String(line)))
-	if !strings.Contains(s, "<!--") && !strings.Contains(s, "-->") {
-		return false
-	}
 	return syncDirectiveLooseRe.MatchString(s)
 }
 

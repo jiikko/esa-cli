@@ -39,6 +39,15 @@ func TestExtractSyncDirective(t *testing.T) {
 		{"先頭に書いた指定", "<!-- esa-sync: s/SKILL.md -->\n---\nname: s\n---\n", "", "", false, true},
 		{"最後の行が esa-sync を含む説明の文（コメントでない）", "text\nuse esa-sync\n", "", "text\nuse esa-sync\n", false, false},
 		{"最後の行が esa-sync の URL", "text\nhttps://example.com/esa-sync を参照\n", "", "text\nhttps://example.com/esa-sync を参照\n", false, false},
+		// 2 周目: コロンを軸にした判定
+		{"em dash のコメント", "text\n<!\u2014 esa-sync: a.md \u2014>\n", "", "", false, true},
+		{"コメントで包み忘れ", "text\nesa-sync: a.md\n", "", "", false, true},
+		{"HTML エンティティ", "text\n&lt;!-- esa-sync: a.md --&gt;\n", "", "", false, true},
+		{"普通のコメント（コロンなし）", "text\n<!-- TODO: esa sync で同期する -->\n", "", "text\n<!-- TODO: esa sync で同期する -->\n", false, false},
+		{"語の途中の esa（Mesa）", "text\n<!-- Mesa synchronization: notes -->\n", "", "text\n<!-- Mesa synchronization: notes -->\n", false, false},
+		{"先頭の行頭に空白", " <!-- esa-sync: a.md -->\n---\nname: s\n---\n", "", "", false, true},
+		{"先頭に BOM", "\ufeff<!-- esa-sync: a.md -->\n---\n", "", "", false, true},
+		{"先頭が全角のコロン", "<!-- esa-sync： a.md -->\n---\n", "", "", false, true},
 		{"直前の空白だけの行も落とす", "text\n   \n\u200b\n<!-- esa-sync: a.md -->\n", "a.md", "text\n", true, false},
 	}
 	for _, tc := range cases {
@@ -67,6 +76,7 @@ func TestMapSyncFilesWithDirective(t *testing.T) {
 		posts   []in
 		want    map[string]string // rel → 書き出す本文
 		wantErr string            // エラー文に含まれるべき文字列（空ならエラーなし）
+		notErr  string            // エラー文に含まれてはいけない文字列
 	}{
 		{
 			name:  "指定のある記事は記事名を使わず、指定の行を取り除く",
@@ -137,6 +147,15 @@ func TestMapSyncFilesWithDirective(t *testing.T) {
 			wantErr: "（#1 の書き出し先は本文の指定による）",
 		},
 		{
+			name: "カテゴリから来たディレクトリとの衝突は、指定のせいにしない",
+			posts: []in{
+				{"R", "foo", "b\n"},
+				{"R/foo.md", "y", "b\n<!-- esa-sync: bar.md -->\n"},
+			},
+			wantErr: "ぶつかります",
+			notErr:  "指定による",
+		},
+		{
 			name: "同じファイルの衝突で、指定による記事の番号を出す",
 			posts: []in{
 				{"R/foo", "SKILL", "b\n"},
@@ -161,6 +180,8 @@ func TestMapSyncFilesWithDirective(t *testing.T) {
 		if tc.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("%s: err = %v; want %q を含むエラー", tc.name, err, tc.wantErr)
+			} else if tc.notErr != "" && strings.Contains(err.Error(), tc.notErr) {
+				t.Errorf("%s: err = %v; %q を含まないはず", tc.name, err, tc.notErr)
 			}
 			continue
 		}

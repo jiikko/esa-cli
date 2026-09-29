@@ -39,10 +39,12 @@ const syncHelp = `esa sync - esa のカテゴリ配下の記事を、ローカ�
   Users/me/skills/foo/SKILL   → ~/.claude/skills/foo/SKILL.md
   Users/me/skills/README      → ~/.claude/skills/README.md
   Users/me/skills/foo/run.md  → ~/.claude/skills/foo/run.md   （.md で終わる名前はそのまま）
-  本文の最後の行に <!-- esa-sync: foo/SKILL.md --> と書いた記事は、記事名に関係なく、記事のカテゴリの
-  ディレクトリからその相対パスへ書く（例: Users/me/skills の記事 → ~/.claude/skills/foo/SKILL.md）。
-  その行は書き出すファイルから取り除く。指定らしいのに形が崩れた行はエラーにする。
-  中身は記事本文の Markdown（front matter は付けない。改行は LF にそろえる）。WIP の記事も対象。
+  書き出し先の指定のある記事は、記事名に関係なく、記事のカテゴリのディレクトリからその相対パスへ書く
+  （例: Users/me/skills の記事で foo/SKILL.md → ~/.claude/skills/foo/SKILL.md）。書き方は 2 通り（両方はエラー）:
+    - skill の front matter の metadata の下に esa-sync: foo/SKILL.md（front matter はそのまま書き出す）
+    - 本文の最後の行に <!-- esa-sync: foo/SKILL.md -->（その行は書き出すファイルから取り除く）
+  指定らしいのに形が崩れたもの（metadata の外の esa-sync・崩れたコメントなど）はエラーにする。
+  中身は記事本文の Markdown（esa の記事情報を front matter として足さない。改行は LF にそろえる）。WIP の記事も対象。
 
 書き込みの規則:
   - 書くのは esa 側にある記事のファイルだけ。esa で消した記事のファイルは消さない
@@ -199,6 +201,7 @@ type syncFile struct {
 	number      int
 	byDirective bool   // 書き出し先を本文の指定（esa-sync:）で決めた
 	catDir      string // 記事のカテゴリに対応するディレクトリ（dir からの相対。指定のある記事で、どこからが指定かを見分ける）
+	warn        string // dry-run と --apply の出力に添える注意（syncSkillWarning）
 	body        string
 	updatedBy   string
 	updatedAt   string
@@ -358,6 +361,10 @@ func printSyncPlan(w io.Writer, plan syncPlan, apply bool) {
 		for _, line := range splitLines(diff) {
 			fmt.Fprintf(w, "    %s\n", visible(line))
 		}
+		// 変更なしの記事にも出す（書き損じのまま一度書き出した後も、気づけるように）
+		if it.f.warn != "" {
+			fmt.Fprintf(w, "  注意: %s（esa #%d）: %s\n", rel, it.f.number, it.f.warn)
+		}
 	}
 	fmt.Fprintf(w, "  記事 %d 件: 新規 %d / 変更 %d / 変更なし %d\n", len(plan.items), nNew, nChanged, nSame)
 	if !apply && len(plan.leftovers) > 0 {
@@ -432,7 +439,7 @@ func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files
 			continue
 		}
 		body := normalizeSyncBody(p["body_md"])
-		spec, rest, found, err := extractSyncDirective(body)
+		spec, rest, found, err := findSyncDirective(body)
 		var rel string
 		switch {
 		case err != nil:
@@ -460,6 +467,9 @@ func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files
 		owner[key] = numbers[i]
 		byDirective[key] = found
 		f := syncFile{rel: rel, number: numbers[i], body: body, byDirective: found, catDir: path.Join(dirParts...)}
+		if !found {
+			f.warn = syncSkillWarning(body, rel)
+		}
 		if by, ok := p["updated_by"].(map[string]any); ok {
 			f.updatedBy, _ = by["screen_name"].(string)
 		}
@@ -668,8 +678,6 @@ func syncDirectiveRelPath(dirParts []string, category, spec string) (string, err
 		return "", fmt.Errorf("書き出し先の指定は .md で終えてください（%s）", label)
 	case strings.HasPrefix(spec, "/"), strings.Contains(spec, `\`):
 		return "", fmt.Errorf("書き出し先の指定は / 区切りの相対パスにしてください（%s）", label)
-	case strings.Contains(spec, "--"): // HTML のコメントの中に -- は書けない（esa の画面ではそこでコメントが閉じ、残りが本文として出る）
-		return "", fmt.Errorf("書き出し先の指定に -- は使えません（%s）", label)
 	}
 	parts := strings.Split(spec, "/")
 	for _, p := range parts {
@@ -738,6 +746,10 @@ func extractSyncDirective(body string) (spec, rest string, found bool, err error
 	}
 	if j := lastNonBlankLine(lines, i); j >= 0 && looksLikeSyncDirective(lines[j]) {
 		return "", "", false, fmt.Errorf("書き出し先の指定が 2 つあります（%q と %q。1 つにしてください）", visible(lines[j]), visible(lines[i]))
+	}
+	// HTML のコメントの中に -- は書けない（esa の画面ではそこでコメントが閉じ、残りが本文として出る）。front matter の指定には関係ない
+	if strings.Contains(m[1], "--") {
+		return "", "", false, fmt.Errorf("書き出し先の指定 %q に -- は使えません（コメントの中に -- は書けません）", visible(m[1]))
 	}
 	// 指定の直前の空の行（空白・見えない文字だけの行）も、指定を探すときと同じ定義で落とす
 	k := lastNonBlankLine(lines, i)

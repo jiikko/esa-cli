@@ -84,7 +84,7 @@ esa search <クエリ...>   記事を検索（結果は TSV。表示カラムは
 esa show   <番号|URL>    記事本文を Markdown（YAML front matter 付き）で出力
 esa meta   <番号|URL>    記事のメタ情報を出力（-comments でコメントも / -copy でリンクをクリップボードへ）
 esa revisions <番号|URL> リビジョン一覧（番号 / 更新日時 / 更新者）
-esa config               設定ファイル(config.yml)の表示・編集
+esa config               設定ファイル(config.yml)の表示・編集（esa sync の対象も同じファイルの sync: に書く）
 esa setup                対話式セットアップ（team と Chrome プロファイルを設定）
 esa sync [名前...]       カテゴリ配下の記事をローカルのディレクトリへ書き出す（既定は dry-run）
 esa help                 ヘルプ

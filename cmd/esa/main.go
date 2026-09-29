@@ -94,7 +94,7 @@ const topUsage = `esa - <team>.esa.io ドキュメント参照 CLI（esa へは�
   meta        記事のメタ情報を出力（-comments でコメントも）
   revisions   リビジョン一覧を出力
   sync        カテゴリ配下の記事をローカルのディレクトリへ書き出す（esa sync --help）
-  config      設定ファイル(config.yml)の表示・編集（使用プロファイル等を保存）
+  config      設定ファイル(config.yml)の表示・編集（使用プロファイル等を保存。esa sync の対象も同じファイルの sync:）
   setup       対話式セットアップ（team/プロファイル等を保存）
   help        このヘルプ
 

@@ -49,6 +49,15 @@ func TestExtractSyncDirective(t *testing.T) {
 		{"先頭の行頭に空白", " <!-- esa-sync: a.md -->\n---\nname: s\n---\n", "", "", false, true},
 		{"先頭に BOM", "\ufeff<!-- esa-sync: a.md -->\n---\n", "", "", false, true},
 		{"先頭が全角のコロン", "<!-- esa-sync： a.md -->\n---\n", "", "", false, true},
+		// 3 周目: 説明の文を止めない・崩しの区切りを足す
+		{"説明の文（最後の行・esa sync:）", "text\n- esa sync: カテゴリを同期する\n", "", "text\n- esa sync: カテゴリを同期する\n", false, false},
+		{"見出し（最初の行・esa-sync:）", "# esa-sync: 書き出し先の指定\ntext\n", "", "# esa-sync: 書き出し先の指定\ntext\n", false, false},
+		{"YAML の例", "text\n  esa_sync: true\n", "", "text\n  esa_sync: true\n", false, false},
+		{"使い方の説明の直後の正しい指定", "最後の行に esa-sync: パス を書く\n<!-- esa-sync: a.md -->\n", "a.md", "最後の行に esa-sync: パス を書く\n", true, false},
+		{"長音の区切り", "text\n<!-- esa\u30fcsync: a.md -->\n", "", "", false, true},
+		{"波ダッシュの区切り", "text\n<!-- esa\u301csync: a.md -->\n", "", "", false, true},
+		{"コード記法とコロン", "text\n<!-- `esa-sync`: a.md -->\n", "", "", false, true},
+		{"U+2236 のコロン", "text\n<!-- esa-sync\u2236 a.md -->\n", "", "", false, true},
 		{"直前の空白だけの行も落とす", "text\n   \n\u200b\n<!-- esa-sync: a.md -->\n", "a.md", "text\n", true, false},
 	}
 	for _, tc := range cases {

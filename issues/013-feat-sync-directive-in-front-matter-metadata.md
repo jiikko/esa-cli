@@ -67,7 +67,9 @@ metadata:
 - [x] リリース v0.3.0（2026-09-29。CI 緑（`ok github.com/jiikko/esa-cli/cmd/esa` をログで確認）→ tag → homebrew-tap の `Formula/esa.rb` を更新 →
   brew uninstall → install（`/opt/homebrew/Cellar/esa/0.3.0/bin/esa`）→ `esa meta 33023` / `esa meta -copy` / 一時コピーの残骸なし /
   `esa sync --help` に metadata の記述 / `esa sync ubiregi-server` の dry-run（末尾コメントの指定の記事 3 件が従来どおり対応付き、注意なし）を確認）
-- [ ] esa の記事（#33021・#33023）を front matter の書き方へ直す（人の手。esa-cli は読むだけ）
+- [x] esa の記事（#33021・#33023）を front matter の書き方へ直す（2026-09-29。1 回目は末尾のコメントを残したまま保存し、
+  「2 つにあります」のエラーで対象ごと止まった（想定どおり）。コメントを消した後、`esa sync ubiregi-server --apply` で 3 件を書き、
+  再度の dry-run で変更なし 3 件。書き出した 2 本の skill は Claude Code の skill の一覧に説明文どおりに出た（metadata を足しても読み込みは壊れない））
 
 ### 変異（2026-09-29）
 

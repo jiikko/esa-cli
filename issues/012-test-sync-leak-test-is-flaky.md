@@ -5,7 +5,8 @@
 ## 概要
 
 `cmd/esa/sync_test.go` の `TestSyncDoesNotLeakDescriptorsOrGoroutines`（`esa sync` を 100 回まわし、
-fd と goroutine の増加を見る検査）が、コードを変えなくても落ちることがある。落ち方は 2 通りで、原因も別。
+fd と goroutine の増加を見る検査）が、コードを変えなくても落ちることがある。落ち方は 2 通りあり、
+どちらも HTTP の接続プールが回をまたいで残ることで説明が付く（見立て。未実測）。
 
 ## 詳細（2026-09-29 の実測）
 

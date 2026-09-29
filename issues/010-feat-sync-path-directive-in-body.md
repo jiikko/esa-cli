@@ -123,7 +123,7 @@ Claude Code の skill を esa で管理すると、記事名を `SKILL` にし�
 - [ ] #33021 で HTML コメントが画面に出ないことの目視（人）
 - [ ] #33021 の `body_md` の先頭の空行を dry-run で確認（人。`esa sync` の dry-run の新規の本文の 1 行目を見る）
 - [x] push（2026-09-29、esa-cli main `4d796da..e3f9f92`）
-- [ ] リリース（ユーザーが変更内容を確認してから。issue 011 と一緒に出す）
+- [x] リリース v0.2.0（2026-09-29。homebrew-tap を更新し、brew uninstall → install → esa meta / meta -copy / 一時コピーの残骸なし を確認）
 
 ## 反証レビュー（2026-09-29、read-only のサブエージェント 2 体。codex は使わない）
 

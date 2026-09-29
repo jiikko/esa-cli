@@ -12,10 +12,9 @@ import (
 // fileConfig は config.yml の内容。すべて任意項目。
 //
 // 🚨 `browser` キーは issue 003 で廃止した（Chrome 専用にしたため）。
-// loadFileConfig は素の yaml.Unmarshal なので、既存の `browser: Brave` は
-// 黙って無視される。さらに saveFileConfig は読み込んだ構造体を書き戻すため、
-// `esa config set` / `esa setup` / `esa config init` を一度でも実行すると
-// 既存の `browser:` 行はファイルから消える（承知の上）。
+// loadFileConfig は素の yaml.Unmarshal なので、既存の `browser: Brave` は黙って無視される。
+// saveFileConfig は profile / team のノードだけを書き換えるので、`browser:` 行は残る（読まれないだけ）。
+// esa sync の対象（`sync:`）は sync_config.go が同じファイルから読む（issue 011）。
 type fileConfig struct {
 	Profile string `yaml:"profile,omitempty"`
 	Team    string `yaml:"team,omitempty"`
@@ -76,27 +75,33 @@ func loadFileConfig() fileConfig {
 	return fileConfigCached
 }
 
-// saveFileConfig は config.yml を書き出す（ディレクトリごと作成）。
+// saveFileConfig は config.yml の profile / team を書き換える（ディレクトリごと作成）。
+//
+// 🚨 struct から組み立て直して書かない。config.yml には esa sync の対象（`sync:`）と手で書いたコメントも入っているので、
+// 読んだノードのうち profile / team だけを書き換えて残りはそのまま書き戻す（issue 011）。
+// 空の値はキーごと消す（以前の omitempty と同じ）。読めないファイル（壊れた YAML・複数の文書）には書かない。
 func saveFileConfig(fc fileConfig) error {
-	dir, err := configDir()
+	path, err := configFilePath()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	path := filepath.Join(dir, "config.yml")
-	data, err := yaml.Marshal(fc)
+	doc, err := readConfigDoc(path)
 	if err != nil {
 		return err
 	}
-	header := "# esa-cli 設定ファイル（esa config set で更新できます）\n" +
-		"# profile: 使用する Chrome プロファイル名（auto でログイン済みを自動検出）\n" +
-		"# team: チーム名（サブドメイン）\n"
-	if err := os.WriteFile(path, append([]byte(header), data...), 0o600); err != nil {
-		return err
-	}
-	return nil
+	top := doc.Content[0]
+	setMappingScalar(top, "profile", fc.Profile)
+	setMappingScalar(top, "team", fc.Team)
+	return writeConfigDoc(path, doc, func(out []byte) error {
+		var got fileConfig
+		if err := yaml.Unmarshal(out, &got); err != nil {
+			return err
+		}
+		if got != fc { // 書いたものを読み戻して、書こうとした値になっているか確かめる
+			return fmt.Errorf("config.yml へ書く内容を読み戻すと %+v になり、書こうとした %+v と違います", got, fc)
+		}
+		return nil
+	})
 }
 
 // resolveDefault は「環境変数 > config.yml > 組み込み既定」の順で既定値を決める。
@@ -114,7 +119,7 @@ func resolveDefault(envKey, fileVal, builtin string) string {
 const configHelp = `esa config - 設定ファイル(config.yml)を表示・編集する
 
 config.yml の場所: $XDG_CONFIG_HOME/esa-cli/config.yml（未設定なら ~/.config/esa-cli/config.yml）
-設定できるキー: profile / team
+設定できるキー: profile / team（esa sync の対象は同じファイルの sync: に書く。esa sync add / esa sync --help）
 優先順位: コマンドラインフラグ > 環境変数 > config.yml > 組み込み既定
 
 使い方:

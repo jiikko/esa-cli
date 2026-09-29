@@ -12,7 +12,7 @@ import (
 
 const syncAddHelp = `esa sync add - esa sync の対象を対話式で追加する
 
-esa のカテゴリ・書き出し先のディレクトリ・名前を順に尋ね、sync.yml に追記する。
+esa のカテゴリ・書き出し先のディレクトリ・名前を順に尋ね、config.yml の sync: に追記する。
 保存の前に、カテゴリ配下の記事がいくつ見つかるかを esa に問い合わせて表示する。
 
 使い方:
@@ -55,7 +55,7 @@ func syncAdd(args []string) error {
 	}
 	targets, path, err := loadSyncTargets()
 	if err != nil {
-		return err // 読めない sync.yml に追記しない
+		return err // 読めない config.yml・残っている sync.yml のまま追記しない
 	}
 
 	in := bufio.NewReader(os.Stdin)

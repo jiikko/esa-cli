@@ -420,7 +420,7 @@ func TestSyncRelPath(t *testing.T) {
 
 func TestParseSyncConfig(t *testing.T) {
 	t.Setenv("HOME", "/home/me")
-	ok := "targets:\n  - name: skills\n    category: /Users/me/skills/\n    dir: ~/.claude/skills\n"
+	ok := "sync:\n  - name: skills\n    category: /Users/me/skills/\n    dir: ~/.claude/skills\n"
 	got, err := parseSyncConfig([]byte(ok))
 	if err != nil || len(got) != 1 || got[0].Category != "Users/me/skills" {
 		t.Fatalf("正しい設定を読めない / カテゴリを正規化していない: %+v %v", got, err)
@@ -431,13 +431,13 @@ func TestParseSyncConfig(t *testing.T) {
 	bad := map[string]string{
 		// 他の項目は全部正しく、未知のキーだけがある形（dir の書き間違いの形だと「dir が空」でも落ちるので、
 		// 未知のキーの検査を外しても緑のままになる）
-		"未知のキー":     "targets:\n  - {name: a, category: C, dir: /x, authors: [me]}\n",
-		"名前の重複":     "targets:\n  - {name: a, category: C, dir: /x}\n  - {name: a, category: D, dir: /y}\n",
-		"予約語の名前":    "targets:\n  - {name: add, category: C, dir: /x}\n",
-		"相対パスの dir": "targets:\n  - {name: a, category: C, dir: rel/x}\n",
-		"空のカテゴリ":    "targets:\n  - {name: a, category: /, dir: /x}\n",
-		"カテゴリに引用符":  "targets:\n  - {name: a, category: 'C\"', dir: /x}\n",
-		"名前に使えない文字": "targets:\n  - {name: 'a b', category: C, dir: /x}\n",
+		"未知のキー":     "sync:\n  - {name: a, category: C, dir: /x, authors: [me]}\n",
+		"名前の重複":     "sync:\n  - {name: a, category: C, dir: /x}\n  - {name: a, category: D, dir: /y}\n",
+		"予約語の名前":    "sync:\n  - {name: add, category: C, dir: /x}\n",
+		"相対パスの dir": "sync:\n  - {name: a, category: C, dir: rel/x}\n",
+		"空のカテゴリ":    "sync:\n  - {name: a, category: /, dir: /x}\n",
+		"カテゴリに引用符":  "sync:\n  - {name: a, category: 'C\"', dir: /x}\n",
+		"名前に使えない文字": "sync:\n  - {name: 'a b', category: C, dir: /x}\n",
 	}
 	for name, src := range bad {
 		if _, err := parseSyncConfig([]byte(src)); err == nil {
@@ -448,18 +448,18 @@ func TestParseSyncConfig(t *testing.T) {
 
 // 追記は既存のコメントと項目を残し、読めないファイル・重複する名前では 1 バイトも書き換えないこと。
 func TestAppendSyncTarget(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cfg", "sync.yml")
+	path := filepath.Join(t.TempDir(), "cfg", "config.yml")
 	if err := appendSyncTarget(path, syncTarget{Name: "a", Category: "C", Dir: "/x"}); err != nil {
 		t.Fatalf("新規作成できない: %v", err)
 	}
 	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
 		t.Errorf("権限が 0600 でない: %v", fi.Mode().Perm())
 	}
-	if !strings.HasPrefix(readFile(t, path), "# esa sync の対象") {
+	if !strings.HasPrefix(readFile(t, path), "# esa-cli 設定ファイル") {
 		t.Errorf("新規作成のヘッダが無い:\n%s", readFile(t, path))
 	}
 
-	hand := "# 手で書いたコメント\ntargets:\n  - name: a # 行末のコメント\n    category: C\n    dir: /x\n"
+	hand := "# 手で書いたコメント\nsync:\n  - name: a # 行末のコメント\n    category: C\n    dir: /x\n"
 	if err := os.WriteFile(path, []byte(hand), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -481,9 +481,9 @@ func TestAppendSyncTarget(t *testing.T) {
 		content string
 		target  syncTarget
 	}{
-		"名前の重複":        {out, syncTarget{Name: "a", Category: "E", Dir: "/z"}},
-		"読めない YAML":    {"targets: [\n", syncTarget{Name: "c", Category: "E", Dir: "/z"}},
-		"targets が文字列": {"targets: x\n", syncTarget{Name: "c", Category: "E", Dir: "/z"}},
+		"名前の重複":     {out, syncTarget{Name: "a", Category: "E", Dir: "/z"}},
+		"読めない YAML": {"sync: [\n", syncTarget{Name: "c", Category: "E", Dir: "/z"}},
+		"sync が文字列": {"sync: x\n", syncTarget{Name: "c", Category: "E", Dir: "/z"}},
 	} {
 		if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
 			t.Fatal(err)
@@ -496,14 +496,14 @@ func TestAppendSyncTarget(t *testing.T) {
 		}
 	}
 
-	if err := os.WriteFile(path, []byte("targets:\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("sync:\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := appendSyncTarget(path, syncTarget{Name: "a", Category: "C", Dir: "/x"}); err != nil {
-		t.Fatalf("`targets:` だけのファイルに追記できない: %v", err)
+		t.Fatalf("`sync:` だけのファイルに追記できない: %v", err)
 	}
 	if got, err := parseSyncConfig([]byte(readFile(t, path))); err != nil || len(got) != 1 {
-		t.Errorf("`targets:` だけのファイルへの追記の結果が違う: %+v %v", got, err)
+		t.Errorf("`sync:` だけのファイルへの追記の結果が違う: %+v %v", got, err)
 	}
 }
 
@@ -780,20 +780,20 @@ func TestSyncWarnsWhenAllHitsAreExcluded(t *testing.T) {
 func TestParseSyncConfigRejectsAmbiguousLayouts(t *testing.T) {
 	t.Setenv("HOME", "/home/me")
 	bad := map[string]string{
-		"複数の文書":          "targets:\n  - {name: a, category: C, dir: /x}\n---\ntargets:\n  - {name: b, category: D, dir: /y}\n",
-		"同じ dir":         "targets:\n  - {name: a, category: C, dir: /x}\n  - {name: b, category: D, dir: /x/}\n",
-		"入れ子の dir":       "targets:\n  - {name: a, category: C, dir: ~/.claude}\n  - {name: b, category: D, dir: ~/.claude/skills}\n",
-		"大文字小文字だけ違う dir": "targets:\n  - {name: a, category: C, dir: /X/skills}\n  - {name: b, category: D, dir: /x/Skills}\n",
+		"複数の文書":          "sync:\n  - {name: a, category: C, dir: /x}\n---\nsync:\n  - {name: b, category: D, dir: /y}\n",
+		"同じ dir":         "sync:\n  - {name: a, category: C, dir: /x}\n  - {name: b, category: D, dir: /x/}\n",
+		"入れ子の dir":       "sync:\n  - {name: a, category: C, dir: ~/.claude}\n  - {name: b, category: D, dir: ~/.claude/skills}\n",
+		"大文字小文字だけ違う dir": "sync:\n  - {name: a, category: C, dir: /X/skills}\n  - {name: b, category: D, dir: /x/Skills}\n",
 	}
 	for name, src := range bad {
 		if _, err := parseSyncConfig([]byte(src)); err == nil {
 			t.Errorf("%s を拒否していない", name)
 		}
 	}
-	if _, err := parseSyncConfig([]byte("targets:\n  - {name: a, category: C, dir: /x}\n---\n")); err != nil {
+	if _, err := parseSyncConfig([]byte("sync:\n  - {name: a, category: C, dir: /x}\n---\n")); err != nil {
 		t.Errorf("末尾の --- だけ（空の文書）を拒否した: %v", err)
 	}
-	ok := "targets:\n  - {name: a, category: C, dir: ~/.claude/skills}\n  - {name: b, category: D, dir: ~/.claude/skills2}\n"
+	ok := "sync:\n  - {name: a, category: C, dir: ~/.claude/skills}\n  - {name: b, category: D, dir: ~/.claude/skills2}\n"
 	if _, err := parseSyncConfig([]byte(ok)); err != nil {
 		t.Errorf("名前が前方一致するだけの別の dir を拒否した: %v", err)
 	}
@@ -803,8 +803,8 @@ func TestParseSyncConfigRejectsAmbiguousLayouts(t *testing.T) {
 func TestAppendSyncTargetKeepsSymlinkAndRefusesMultiDoc(t *testing.T) {
 	base := t.TempDir()
 	real := filepath.Join(base, "real.yml")
-	link := filepath.Join(base, "sync.yml")
-	if err := os.WriteFile(real, []byte("targets:\n  - {name: a, category: C, dir: /x}\n"), 0o644); err != nil {
+	link := filepath.Join(base, "config.yml")
+	if err := os.WriteFile(real, []byte("sync:\n  - {name: a, category: C, dir: /x}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(real, link); err != nil {
@@ -820,7 +820,7 @@ func TestAppendSyncTargetKeepsSymlinkAndRefusesMultiDoc(t *testing.T) {
 		t.Errorf("実体に追記されていない: %+v %v", got, err)
 	}
 
-	multi := "targets:\n  - {name: a, category: C, dir: /x}\n---\ntargets:\n  - {name: b, category: D, dir: /y}\n"
+	multi := "sync:\n  - {name: a, category: C, dir: /x}\n---\nsync:\n  - {name: b, category: D, dir: /y}\n"
 	path := filepath.Join(base, "multi.yml")
 	if err := os.WriteFile(path, []byte(multi), 0o600); err != nil {
 		t.Fatal(err)
@@ -835,7 +835,7 @@ func TestAppendSyncTargetKeepsSymlinkAndRefusesMultiDoc(t *testing.T) {
 
 // コメントだけの sync.yml に追記しても、手で書いたコメントを残すこと。
 func TestAppendSyncTargetKeepsCommentOnlyFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sync.yml")
+	path := filepath.Join(t.TempDir(), "config.yml")
 	if err := os.WriteFile(path, []byte("# 自分用のメモ\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -938,7 +938,7 @@ func TestSyncAddRejectsBadInputBeforeQueryingEsa(t *testing.T) {
 	srv := f.serve(t)
 	installFakeProfiles(t, []string{"P"}, map[string]fakeProfile{"P": {url: srv.URL}})
 	t.Setenv("HOME", t.TempDir())
-	path, _ := syncConfigPath()
+	path, _ := configFilePath()
 	if err := appendSyncTarget(path, syncTarget{Name: "skills", Category: "C", Dir: "~/.claude/skills"}); err != nil {
 		t.Fatal(err)
 	}

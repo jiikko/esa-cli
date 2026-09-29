@@ -182,15 +182,12 @@ stderr に出して続行する（自動判定が誤ったときの逃げ道。�
 
 - 場所: `$XDG_CONFIG_HOME/esa-cli/config.yml`（未設定なら `~/.config/esa-cli/config.yml`）
 - 優先順位: **コマンドラインフラグ > 環境変数 > config.yml > 組み込み既定**
-- キー: `profile` / `team`
+- キー: `profile` / `team` / `sync`（`sync` は `esa sync` の対象。下の「カテゴリをローカルのディレクトリへ書き出す」）
 
 > **`browser` キーは廃止しました（Chrome 専用）。** 以前あった `-browser` フラグ / `ESA_BROWSER` /
 > config.yml の `browser` キーは削除済みです（issue 003）。理由は、Chrome 以外の対応表の値
 > （Keychain のサービス名・Application Support のディレクトリ名）を実機で確認できないため。
-> 既存の `browser:` 行は無視され、`esa config set`/`setup`/`config init` の書き戻しで消えます。
-> （書き戻しは config.yml を `profile` / `team` から組み立て直すので、**手で書いたコメント行や
-> 未知のキーも一緒に消えます**。これは以前からの挙動ですが、`browser` は「かつて正式なキーだった値」
-> として初めてこれに当たります。残したい記述があれば書き戻し前に控えてください。）
+> 既存の `browser:` 行は読まれません（ファイルには残ります）。
 > `esa config set browser X` は「不明なキー」エラーになります。
 > プロファイルの検出キャッシュ名も `profile-<ブラウザ>-<team>` から `profile-<team>` に変わったため、
 > 旧ファイルは孤児として残ります（実害は自動検出が一度だけ余計に走るだけ。手で消して構いません）。
@@ -208,7 +205,17 @@ config.yml の例:
 ```yaml
 team: myteam        # https://myteam.esa.io の myteam 部分
 profile: Profile 3  # 使用する Chrome プロファイル（省略時は auto で自動検出）
+sync:               # esa sync の対象（esa sync add で追加できる）
+  - name: skills
+    category: Users/me/skills
+    dir: ~/.claude/skills
 ```
+
+- `esa config set` / `esa config init` / `esa setup` と `esa sync add` は、自分のキー（`profile` / `team`、または `sync`）だけを
+  書き換えて書き戻す。**手で書いたコメント・他のキー・並びは残る**（issue 011。以前は `profile` / `team` から組み立て直して、
+  コメントや未知のキーを消していた）。書き戻すと YAML の整形（字下げ・引用符）はそろう。
+- 読めない config.yml（壊れた YAML・`---` で区切った複数の文書・最上位が `key: value` の並びでない）には書き込まない。
+- config.yml がシンボリックリンク（dotfiles の実体を指す等）なら、リンクを残したまま実体へ書く。
 
 > 補足: `search` を公式 API(api.esa.io) で高速化したい場合は環境変数 `ESA_TOKEN` を使う
 > （config.yml のキーではない。未設定でも Chrome cookie で動くので通常は不要）。
@@ -225,12 +232,12 @@ esa sync skills --apply  # 1 対象を書き込む
 esa sync list            # 登録済みの対象
 ```
 
-- 対象は `$XDG_CONFIG_HOME/esa-cli/sync.yml`（未設定なら `~/.config/esa-cli/sync.yml`）。`config.yml` とは別のファイル
-  （`esa config set` は `config.yml` を組み立て直してコメントを消すため。`sync.yml` は手で編集してもよく、
-  `esa sync add` の追記もコメントを残す）
+- 対象は `config.yml`（上の「設定ファイル」）の `sync:` に書く。手で編集してもよく、`esa sync add` の追記もコメントを残す。
+  **v0.1.8 までの `sync.yml` は読まない**。残っていれば、`esa sync` がエラーで移し方を案内する
+  （`sync.yml` の `targets:` の下の項目を、`config.yml` の `sync:` の下へそのまま移し、`sync.yml` を消す）。
 
   ```yaml
-  targets:
+  sync:
     - name: skills               # esa sync <name> で指定する名前
       category: Users/me/skills  # esa のカテゴリ
       dir: ~/.claude/skills      # 書き出し先（絶対パスか ~ 始まり）

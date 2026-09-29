@@ -23,7 +23,7 @@ import (
 const syncHelp = `esa sync - esa のカテゴリ配下の記事を、ローカルのディレクトリへ書き出す（esa → ローカルの一方向）
 
 使い方:
-  esa sync [オプション] [名前...]   sync.yml の対象の差分を表示する（既定は dry-run。書き込まない）
+  esa sync [オプション] [名前...]   config.yml の sync: の対象の差分を表示する（既定は dry-run。書き込まない）
   esa sync --apply [名前...]       差分を表示してから書き込む（書くのはその時点の esa の内容。
                                    dry-run の後に esa 側が変わっていれば、変わった内容が書かれる）
   esa sync add                     対象を対話式で追加する（esa sync add --help）
@@ -59,8 +59,9 @@ const syncHelp = `esa sync - esa のカテゴリ配下の記事を、ローカ�
     （macOS の既定のファイルシステムでは同じファイルになるため）
   - 差分の表示では制御文字を \x{1b} のようにエスケープする（端末の表示で本文を隠せないように）
 
-設定ファイル: $XDG_CONFIG_HOME/esa-cli/sync.yml（未設定なら ~/.config/esa-cli/sync.yml）
-  targets:
+設定ファイル: $XDG_CONFIG_HOME/esa-cli/config.yml（未設定なら ~/.config/esa-cli/config.yml）の sync:
+  （profile / team と同じファイル。v0.1.8 までの sync.yml は読まない。残っていればエラーで移し方を案内する）
+  sync:
     - name: skills
       category: Users/me/skills
       dir: ~/.claude/skills

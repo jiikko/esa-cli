@@ -27,7 +27,7 @@ func TestTopUsageIsSummaryOnly(t *testing.T) {
 func TestSubcommandHelpsCarryCommonDetails(t *testing.T) {
 	for name, h := range map[string]string{
 		"search": searchHelp, "show": showHelp, "meta": metaHelp, "revisions": revisionsHelp,
-		"sync": syncHelp, "sync add": syncAddHelp,
+		"sync": syncHelp, "sync add": syncAddHelp, "setup": setupHelp,
 	} {
 		for _, want := range []string{"-team <name>", "-profile <name>", "終了コード:", "認証:"} {
 			if !strings.Contains(h, want) {

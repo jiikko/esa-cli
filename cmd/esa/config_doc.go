@@ -154,12 +154,11 @@ func setMappingScalar(top *yaml.Node, key, value string) {
 			continue
 		}
 		k, v := top.Content[i], top.Content[i+1]
+		// マッピングやリストの profile / team は parseConfigDoc（loadFileConfig と同じ読み方の検査）が先に拒むので、ここに来るのは
+		// スカラーかエイリアス（*a）。エイリアスは Value がアンカー名なので値の比較が一致せず書き換わり、同じ値のリテラルになる（受容。issue 011）
 		cur := v.Value
-		if v.Kind != yaml.ScalarNode || v.Tag == "!!null" {
+		if v.Tag == "!!null" {
 			cur = ""
-			if v.Kind != yaml.ScalarNode {
-				cur = "\x00" // スカラーでない値（読み込みで弾かれるはず）は必ず書き換える
-			}
 		}
 		if cur == value {
 			return

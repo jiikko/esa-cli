@@ -113,8 +113,6 @@ Claude Code の skill を esa で管理すると、記事名を `SKILL` にし�
 
 ## 進捗
 
-- [ ] #33021 で HTML コメントが画面に出ないことを目視
-- [ ] #33021 の `body_md` の先頭の空行を dry-run で確認
 - [x] 実装（`syncRelPath` を 3 つに分け、要素の検査を共通化） — commit「feat(sync): 本文の最後の行の `<!-- esa-sync: … -->` で書き出し先を指定できるようにする（issue 010）」
 - [x] テスト・ヘルプ・README — 同上。`cmd/esa/sync_directive_test.go`（`TestExtractSyncDirective` / `TestMapSyncFilesWithDirective` / `TestSyncWritesToDirectivePath`）
 - [x] 実装への red team 3 周の採用分 — commit「fix(sync): 書き出し先の指定の見逃しと衝突の文言を直す」「fix(sync): 崩れた指定の判定の軸を…」「fix(sync): 崩れた指定の判定に『.md で終わるパスが続く』を…」「test(sync): 崩れた指定の判定の語の境界を試すケースを足す」
@@ -124,7 +122,8 @@ Claude Code の skill を esa で管理すると、記事名を `SKILL` にし�
   - 3 周目 9 本: コロンを要件にしない / 語の先頭の境界を外す（最初は緑 → 「Mesa sync:」のケースを足して red）/ 先頭の行は厳密な形だけ / カテゴリ由来でも指定のせいにする / コメントの記号で限る旧条件 / `.md` を要件にしない / 長音を区切りにしない / バッククォートを許さない / U+2236 を許さない
 - [ ] #33021 で HTML コメントが画面に出ないことの目視（人）
 - [ ] #33021 の `body_md` の先頭の空行を dry-run で確認（人。`esa sync` の dry-run の新規の本文の 1 行目を見る）
-- [ ] push（ユーザーの判断待ち）
+- [x] push（2026-09-29、esa-cli main `4d796da..e3f9f92`）
+- [ ] リリース（ユーザーが変更内容を確認してから。issue 011 と一緒に出す）
 
 ## 反証レビュー（2026-09-29、read-only のサブエージェント 2 体。codex は使わない）
 

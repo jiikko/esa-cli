@@ -19,7 +19,7 @@ team・使用する Chrome プロファイルを順に尋ね、認証確認の�
 
 非対話（パイプ/入力なし）で実行した場合は各項目とも既定値を採用する。
 team に既定が無い（未設定）まま非対話だと、team 必須エラーで終了する。
-`
+` + commonOptionsHelp + commonTailHelp
 
 // promptDefault は 1 行入力を求める。空入力/EOF なら def を返す。
 func promptDefault(r *bufio.Reader, label, def string) string {

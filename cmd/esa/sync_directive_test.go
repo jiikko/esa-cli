@@ -45,6 +45,7 @@ func TestExtractSyncDirective(t *testing.T) {
 		{"HTML エンティティ", "text\n&lt;!-- esa-sync: a.md --&gt;\n", "", "", false, true},
 		{"普通のコメント（コロンなし）", "text\n<!-- TODO: esa sync で同期する -->\n", "", "text\n<!-- TODO: esa sync で同期する -->\n", false, false},
 		{"語の途中の esa（Mesa）", "text\n<!-- Mesa synchronization: notes -->\n", "", "text\n<!-- Mesa synchronization: notes -->\n", false, false},
+		{"語の途中の esa（Mesa sync:）", "text\n<!-- Mesa sync: notes -->\n", "", "text\n<!-- Mesa sync: notes -->\n", false, false},
 		{"先頭の行頭に空白", " <!-- esa-sync: a.md -->\n---\nname: s\n---\n", "", "", false, true},
 		{"先頭に BOM", "\ufeff<!-- esa-sync: a.md -->\n---\n", "", "", false, true},
 		{"先頭が全角のコロン", "<!-- esa-sync： a.md -->\n---\n", "", "", false, true},

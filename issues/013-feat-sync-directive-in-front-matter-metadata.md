@@ -64,7 +64,10 @@ metadata:
 - [x] 変異で red を確認（使い捨ての worktree で 4 周・計 28 本。下）
 - [x] 反証レビュー（壊す 3 周 + 回帰と文書 1 本。下）
 - [x] help / README（issue 010 の `--` の記述にも追記）
-- [ ] リリース（未。リリースするまで esa の記事を新しい書き方へ直さない。今の v0.2.0 は metadata を読まず、記事の題のファイル名で書き出す）
+- [x] リリース v0.3.0（2026-09-29。CI 緑（`ok github.com/jiikko/esa-cli/cmd/esa` をログで確認）→ tag → homebrew-tap の `Formula/esa.rb` を更新 →
+  brew uninstall → install（`/opt/homebrew/Cellar/esa/0.3.0/bin/esa`）→ `esa meta 33023` / `esa meta -copy` / 一時コピーの残骸なし /
+  `esa sync --help` に metadata の記述 / `esa sync ubiregi-server` の dry-run（末尾コメントの指定の記事 3 件が従来どおり対応付き、注意なし）を確認）
+- [ ] esa の記事（#33021・#33023）を front matter の書き方へ直す（人の手。esa-cli は読むだけ）
 
 ### 変異（2026-09-29）
 

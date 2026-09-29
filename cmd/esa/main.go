@@ -79,47 +79,43 @@ func newFlagSet(name string) *flag.FlagSet {
 	return fs
 }
 
-// topUsage は `esa` / `esa --help` の出力（サブコマンド一覧 + 1 行概要 + 共通事項）。
-const topUsage = `esa - <team>.esa.io ドキュメント参照 CLI（esa へは書き込まない / Chrome cookie 認証）
+// topUsage は `esa` / `esa --help` の出力。概要とサブコマンドの一覧だけを持ち、詳細は各サブコマンドの --help に置く。
+const topUsage = `esa - <team>.esa.io の記事を検索して読む CLI（esa へは書き込まない / Chrome のログインで認証）
 
-概要:
-  esa チームの記事を検索して本文を読むためのコマンド。公開 Web に無いチーム内の情報（手順書・規程・
-  インシデント記録・設計メモ等）を調べるのに使う。esa への書き込みは無い（sync はローカルのディレクトリへ書き出すだけ）。
-  認証は自動：ログイン済みの Chrome プロファイルを自動検出するので鍵やトークンの指定は不要。
-  基本は 2 段階 — esa search '<クエリ>' で記事番号を得て、esa show <番号> で本文を読む。
+使い方:  esa <サブコマンド> [オプション] [引数]
+  基本は esa search '<クエリ>' で記事番号を得て、esa show <番号> で本文を読む。
 
 サブコマンド:
-  search      記事を検索して一覧表示（TSV。表示カラムは -c で変更可）
-  show        記事本文を Markdown（front matter 付き）で出力
-  meta        記事のメタ情報を出力（-comments でコメントも）
-  revisions   リビジョン一覧を出力
-  sync        カテゴリ配下の記事をローカルのディレクトリへ書き出す（esa sync --help）
-  config      設定ファイル(config.yml)の表示・編集（使用プロファイル等を保存。esa sync の対象も同じファイルの sync:）
-  setup       対話式セットアップ（team/プロファイル等を保存）
+  search      記事を検索して一覧を出す
+  show        記事の本文を Markdown で出す
+  meta        記事のメタ情報を出す
+  revisions   記事のリビジョン一覧を出す
+  sync        カテゴリ配下の記事をローカルのディレクトリへ書き出す
+  config      設定ファイル（config.yml）を表示・編集する
+  setup       対話式で初期設定する（team・Chrome のプロファイル）
   help        このヘルプ
 
-各サブコマンドの詳細:  esa <サブコマンド> --help   （例: esa search --help）
+各サブコマンドの詳細（オプション・終了コード・認証）:  esa <サブコマンド> --help
+はじめて使うとき:  esa setup
+`
 
-共通オプション（全サブコマンド）:
-  -team <name>     チーム名（サブドメイン）。必須。https://<team>.esa.io の <team>（ESA_TEAM / config でも可）
-  -profile <name>  Chrome のプロファイル。既定 auto=ログイン済みを自動検出（ESA_CHROME_PROFILE）
-  -json            JSON で出力（search / meta / revisions。show は常に Markdown）
+// commonOptionsHelp は esa に問い合わせるサブコマンドの help に共通のオプションの説明（正本はここだけ）。
+const commonOptionsHelp = `
+共通オプション:
+  -team <name>     チーム名（サブドメイン）。https://<team>.esa.io の <team>（ESA_TEAM / config.yml の team でも可）
+  -profile <name>  Chrome のプロファイル。既定 auto=ログイン済みを自動検出（ESA_CHROME_PROFILE / config.yml の profile）
+  優先順位: コマンドラインフラグ > 環境変数 > config.yml > 既定（詳細は esa config --help）
+`
 
-設定の優先順位: コマンドラインフラグ > 環境変数 > config.yml > 既定
-  よく使う値（使用プロファイル等）は config.yml に保存できる。詳細は esa config --help
-  例: esa config set profile "Profile 3"   /   esa config init（自動検出して保存）
-
-引数:
-  <番号> は記事 URL 末尾の数値。URL をそのまま渡してもよい
-  （例: esa show https://<team>.esa.io/posts/28025）
-
-終了コード: 0=成功 / 1=実行時エラー(認証切れ・404・ネットワーク等) / 2=使い方の誤り
-  エラーは stderr に「エラー: ...」で出力。
+// commonTailHelp は esa に問い合わせるサブコマンドの help の末尾に付ける、終了コードと認証の説明（正本はここだけ）。
+const commonTailHelp = `
+終了コード: 0=成功 / 1=実行時エラー（認証切れ・404・ネットワーク等） / 2=使い方の誤り
+  エラーは stderr に「エラー: ...」で出す。
 
 認証:
-  対象 Chrome で https://<team>.esa.io にログインしている必要がある。セッション切れだと
-  内部エンドポイントは全パス 404 になる（非公開チームの挙動）→ Chrome で入り直す。
-  初回は macOS の Keychain 許可ダイアログで「常に許可」を選ぶ。
+  対象の Chrome で https://<team>.esa.io にログインしている必要がある。セッションが切れると
+  内部のエンドポイントがすべて 404 になる（非公開チームの挙動）→ Chrome で入り直す。
+  初回は macOS の Keychain の許可ダイアログで「常に許可」を選ぶ。
 `
 
 // searchHelp は `esa search --help` の詳細。
@@ -138,7 +134,6 @@ const searchHelp = `esa search - 記事を検索する（結果は TSV。表示�
   -n <数>              取得件数目安（ESA_TOKEN 使用時の per_page、最大 100）
   -page <数>           ページ番号
   -json                各記事オブジェクトの配列を JSON で出力
-  （共通オプション -team/-profile は esa --help を参照）
 
 指定可能なカラム（-c / -columns）:
   number      記事番号
@@ -180,7 +175,7 @@ const searchHelp = `esa search - 記事を検索する（結果は TSV。表示�
   esa search -c number,created,updated,created_by,updated_by,url 'title:ガイドライン'
   esa search -no-header -c number,url 'キーワード' | awk -F'\t' '{print $2}'
   esa search -json 'in:設計' | jq -r '.[].number'
-`
+` + commonOptionsHelp + commonTailHelp
 
 // showHelp は `esa show --help` の詳細。
 const showHelp = `esa show - 記事本文を Markdown で出力する
@@ -191,14 +186,13 @@ const showHelp = `esa show - 記事本文を Markdown で出力する
 出力:
   YAML front matter（title/category/tags/created_at/updated_at/number 等）+ 本文の Markdown。
   そのまま grep や less、glow に流せる。-json は無効（show は常に Markdown）。
-  （共通オプション -team/-profile は esa --help を参照）
 
 例:
   esa show 28025
   esa show https://<team>.esa.io/posts/28025
   esa show 28025 | sed -n '1,120p'     # 長い記事は範囲を絞る
   esa show 28025 | glow -              # 色付きで読む
-`
+` + commonOptionsHelp + commonTailHelp
 
 // metaHelp は `esa meta --help` の詳細。
 const metaHelp = `esa meta - 記事のメタ情報を出力する
@@ -214,7 +208,6 @@ const metaHelp = `esa meta - 記事のメタ情報を出力する
               HTML と テキスト（最終行に URL）を同時に入れる
   -copy-title タイトルをリンクにした形だけをコピーする（「タイトル URL」）
               -copy / -copy-title は -json / -comments とは併用不可
-  （共通オプション -team/-profile は esa --help を参照）
 
 既定の表示（読みやすい key: value 形式）:
   number / full_name / wip / category / tags / created_at / updated_at /
@@ -226,7 +219,7 @@ const metaHelp = `esa meta - 記事のメタ情報を出力する
   esa meta 28025 -json | jq '.updated_by.screen_name'
   esa meta -copy https://<team>.esa.io/posts/28025
   esa meta -copy-title 28025
-`
+` + commonOptionsHelp + commonTailHelp
 
 // revisionsHelp は `esa revisions --help` の詳細。
 const revisionsHelp = `esa revisions - 記事のリビジョン一覧を出力する
@@ -237,12 +230,11 @@ const revisionsHelp = `esa revisions - 記事のリビジョン一覧を出力�
 出力:
   「リビジョン番号 / 更新日時 / 更新者 screen_name」をタブ区切りで（新しい順）。
   -json で生の JSON を出力。
-  （共通オプション -team/-profile は esa --help を参照）
 
 例:
   esa revisions 28025
   esa revisions 28025 -json
-`
+` + commonOptionsHelp + commonTailHelp
 
 func main() {
 	// Chrome の Cookie DB の一時コピーを、Ctrl-C でも残さないようにする（cookies.go の②）。

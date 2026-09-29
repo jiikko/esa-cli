@@ -34,7 +34,6 @@ const syncHelp = `esa sync - esa のカテゴリ配下の記事を、ローカ�
 
 オプション:
   -apply   書き込む（付けなければ差分の表示だけ）
-  （共通オプション -team/-profile は esa --help を参照）
 
 対応の規則（category: Users/me/skills、dir: ~/.claude/skills の場合）:
   Users/me/skills/foo/SKILL   → ~/.claude/skills/foo/SKILL.md
@@ -70,7 +69,7 @@ const syncHelp = `esa sync - esa のカテゴリ配下の記事を、ローカ�
   esa sync add
   esa sync                 # 全対象の差分を確認
   esa sync skills --apply  # 1 対象だけ書き込む
-`
+` + commonOptionsHelp + commonTailHelp
 
 // maxSyncPages は検索のページ送りの上限。超えたら切り詰めた一覧で書き出さずにエラーにする。
 const maxSyncPages = 200
@@ -159,9 +158,21 @@ func selectSyncTargets(targets []syncTarget, names []string, path string) ([]syn
 	return out, nil
 }
 
+// syncListHelp は `esa sync list --help` の出力。
+const syncListHelp = `esa sync list - 登録済みの esa sync の対象を一覧する
+
+使い方:
+  esa sync list
+
+出力は 1 対象 1 行の TSV（名前・カテゴリ・書き出し先）。対象は config.yml の sync: に書く（esa sync add で追加できる）。
+対象が無ければ何も出さず、stderr に「登録なし」と出す。esa には問い合わせない。
+
+終了コード: 0=成功 / 1=config.yml を読めない等 / 2=使い方の誤り
+`
+
 func syncList(args []string) error {
 	fs := newFlagSet("sync list")
-	positional, done, err := parsePositionals(fs, syncHelp, args)
+	positional, done, err := parsePositionals(fs, syncListHelp, args)
 	if err != nil || done {
 		return err
 	}

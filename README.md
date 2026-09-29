@@ -90,7 +90,8 @@ esa sync [名前...]       カテゴリ配下の記事をローカルのディ�
 esa help                 ヘルプ
 ```
 
-- ヘルプは 2 段構え: `esa --help` でサブコマンド一覧、`esa <サブコマンド> --help` で各コマンドの詳細。
+- ヘルプは 2 段構え: `esa --help` は概要とサブコマンドの一覧だけ。オプション・共通オプション（`-team` / `-profile`）・終了コード・認証の
+  詳細は `esa <サブコマンド> --help`（`esa sync add --help` / `esa sync list --help` も）に出る。
   **`--help` は stdout に出る**ので `esa search --help | less` のようにパイプへ流せる。
   フラグの誤りの usage は stderr（rc=2）。
 - `<番号>` は記事 URL 末尾の数値。`esa show https://<team>.esa.io/posts/28025` のように URL でも可。

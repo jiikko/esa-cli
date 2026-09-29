@@ -24,7 +24,6 @@ esa のカテゴリ・書き出し先のディレクトリ・名前を順に尋�
                         そのまま貼ってもよい（記事の URL は不可。URL のチームは設定中の team と同じであること）
   -dir <ディレクトリ>   書き出し先（絶対パスか ~ 始まり）
   -name <名前>          esa sync <名前> で指定する名前（既定: カテゴリの末尾）
-  （共通オプション -team/-profile は esa --help を参照）
 
 非対話（パイプ/入力なし）で実行した場合は各項目とも既定値を採用する。
 既定の無い項目が空のままだと、使い方エラーで終了する。
@@ -32,7 +31,7 @@ esa のカテゴリ・書き出し先のディレクトリ・名前を順に尋�
 例:
   esa sync add
   esa sync add -category 'Users/me/skills' -dir ~/.claude/skills </dev/null
-`
+` + commonOptionsHelp + commonTailHelp
 
 func syncAdd(args []string) error {
 	var cfg config

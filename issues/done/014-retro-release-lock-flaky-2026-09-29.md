@@ -47,7 +47,10 @@
 
 ## 残課題
 
-- [ ] 1 の切り出し（ユーザーの判断待ち）
-- [ ] 2 の切り出し（ユーザーの判断待ち）
-- [ ] 3 の切り出し（ユーザーの判断待ち）
-- [ ] 4 の README への追記（ユーザーの判断待ち）
+すべて決着（2026-09-29、ユーザーの判断で全部切り出し）。
+
+- [x] 1 → dotfiles の `_claude/rules/list-masked-failure-modes-before-removing-guard.md` の冒頭の発動点に追記
+- [x] 2 → `_claude/rules/verify-execution-not-just-exit-code.md` の「実行環境を変えたら…」の節に追記
+- [x] 3 → 同じ rule の「待つと決めたら待つ」の項に追記
+  （1〜3 は dotfiles の commit「docs(rules): 判定の鍵の置き換え・CI と同じ toolchain での事前実行・待ちの上限の宣言を足す」）
+- [x] 4 → esa-cli / slack-cli / newrelic-nrql-cli の README の「リリース」節の先頭に「`git fetch --tags` で最新の版を確かめる」を追記

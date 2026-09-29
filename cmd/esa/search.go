@@ -45,7 +45,7 @@ func (c *client) search(teamName, query string, perPage, page int, token string,
 		return nil, err
 	}
 	if enrich {
-		if failed, firstErr := c.enrichResults(results, 6); failed > 0 {
+		if failed, firstErr := c.enrichResults(results, fetchConcurrency); failed > 0 {
 			// 基本情報（number/title/url）のみで残す方針は維持する。rc は 0 のまま。
 			// ただし黙って空欄にしない（日付・author が空なのが取得失敗だと分かるように）。
 			fmt.Fprintf(os.Stderr, "警告: %d/%d 件の詳細取得に失敗しました（該当行は number/title/url のみ）。最初のエラー: %v\n",

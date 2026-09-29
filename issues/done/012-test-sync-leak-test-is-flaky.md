@@ -6,7 +6,7 @@
 
 `cmd/esa/sync_test.go` の `TestSyncDoesNotLeakDescriptorsOrGoroutines`（`esa sync` を 100 回まわし、
 fd と goroutine の増加を見る検査）が、コードを変えなくても落ちることがある。落ち方は 2 通りあり、
-どちらも HTTP の接続プールが回をまたいで残ることで説明が付く（見立て。未実測）。
+どちらも HTTP の接続の使い回しの問題だった（下の「進捗」で実測した）。
 
 ## 詳細（2026-09-29 の実測）
 
@@ -52,8 +52,21 @@ fd と goroutine の増加を見る検査）が、コードを変えなくても
 
 ## 進捗
 
-- [ ] 1 の原因の特定（増えた fd の中身。最有力は http.DefaultTransport の接続プール）
-- [ ] 2 の原因の特定（前の回から残っているもの。同上）
-- 反証レビュー（read-only のサブエージェント）済み: 引用・行・commit は一致。候補に接続プールが抜けていたのを足し、
-  ロックのファイルを候補から外し、1 回だけの実行では出ないこと・失敗が連続したこと・1 が手元でも出ることを足した
-- [ ] 修正と `-count=30` での確認
+- [x] 1 の原因の特定: 前後の `lsof` の差分で増えていたのは、プロセス内の fake サーバとの `ESTABLISHED` の TCP 接続
+  （keep-alive で待機中の接続。クライアント側とサーバ側の 2 本ずつ）。プールに何本待機しているかで数が揺れていた
+- [x] 2 の原因の特定: 全件失敗した回のエラーは `dial tcp 127.0.0.1:…: connect: can't assign requested address`
+  （一時ポートの枯渇）。記事の取得は 6 並列だが、`http.DefaultTransport` のホストごとの待機接続は 2 本まで
+  （`MaxIdleConnsPerHost` の既定）なので、残りは毎回閉じて張り直していた。閉じた接続の TIME_WAIT が `-count` の回を
+  重ねて積もり、ポートが尽きた。**本番でも**、sync・search の補完で記事ごとに接続を張り直していた
+- [x] 修正（commit「fix: 記事の並列取得で接続を使い回し、sync の漏れ検査を待機中の接続で揺らさない（issue 012）」）
+  - 本番: `cmd/esa/client.go` に全クライアント共有の `sharedTransport`（`DefaultTransport` の Clone、
+    `MaxIdleConnsPerHost = fetchConcurrency`）を置く。並列度を `fetchConcurrency` 定数にまとめ、search の補完と
+    sync の取得の両方がそれを使う（並列度だけを上げて使い回しが外れる形にならない）
+  - テスト: fd を数える前に `sharedTransport.CloseIdleConnections()` し、数が落ち着くまで待つ（待機中の接続だけを
+    閉じるので、使い中のまま漏れた接続は残る）
+- [x] 確認: `-count=30` を 3 回（90 回）で失敗 0（修正前は 30 回中 2 回前後）。go1.26 / go1.25.0 で全テスト緑
+- 変異: 待機接続を既定の 2 本に戻す → `-count=30` で「--apply がほとんど成功していない（0 回）」が再現（red）/
+  書き出し先の `root.Close` を外す → `fd 10 → 80` で red（漏れの検出力は残っている）
+- 却下した変異: 応答の body の `Close` を外す変異は、修正前のテストでも緑。fake サーバの失敗応答は body が空で、
+  EOF まで読めた接続は Close しなくてもプールへ戻るため、漏れになっていない（等価変異）
+- 反証レビュー（read-only のサブエージェント）済み: 候補に接続プールを足し、ロックのファイルを候補から外した

@@ -409,7 +409,7 @@ func (c *client) fetchCategoryPosts(category string) (numbers []int, posts []map
 		return nil, nil, err
 	}
 	posts = make([]map[string]any, len(numbers))
-	if failed, firstErr := forEachConcurrent(len(numbers), 6, func(i int) error {
+	if failed, firstErr := forEachConcurrent(len(numbers), fetchConcurrency, func(i int) error {
 		p, err := c.postJSON(numbers[i], false)
 		if err != nil {
 			return fmt.Errorf("記事 %d: %w", numbers[i], err)

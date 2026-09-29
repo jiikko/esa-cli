@@ -42,6 +42,22 @@ func (e *errHTTPStatus) Error() string {
 	return fmt.Sprintf("予期しないステータス %d: %s", e.code, e.url)
 }
 
+// fetchConcurrency は記事の JSON を並列に取るときの並列度（search の補完・sync の取得）。
+const fetchConcurrency = 6
+
+// sharedTransport は全クライアントが共有する接続プール。
+//
+// 🚨 http.DefaultTransport をそのまま使わない。ホストごとに待機させておける接続が 2 本
+// （MaxIdleConnsPerHost の既定）しかなく、fetchConcurrency 並列で取ると残りの接続は毎回閉じられて
+// 新しく張り直される。閉じた接続は TIME_WAIT で一時ポートを占有し、続けて回すとポートが尽きて
+// `connect: can't assign requested address` で全件失敗した（issue 012。テストの繰り返し実行で実測）。
+// 並列度から決めるので、並列度だけを上げて使い回しが外れる形にはならない。
+var sharedTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = fetchConcurrency
+	return t
+}()
+
 // newHTTPClient は資格情報を持ち越さないリダイレクト方針を持つクライアントを作る。
 //
 // 🚨 Go の既定はリダイレクトを追い、そのとき資格情報が持ち越される:
@@ -53,7 +69,8 @@ func (e *errHTTPStatus) Error() string {
 // scheme のダウングレードとホストの変更だけを止める。
 func newHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout: 30 * time.Second,
+		Transport: sharedTransport,
+		Timeout:   30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) == 0 {
 				return nil

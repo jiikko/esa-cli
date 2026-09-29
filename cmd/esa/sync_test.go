@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeEsa は検索（/posts?q=）と記事 JSON（/posts/N.json）を返す偽の esa。
@@ -1132,12 +1133,30 @@ func TestSyncDoesNotLeakDescriptorsOrGoroutines(t *testing.T) {
 	if _, err := exec.LookPath("lsof"); err != nil {
 		t.Fatalf("lsof が無いので fd を数えられない（macOS 専用の repo なので在るはず）: %v", err)
 	}
-	countFDs := func() int {
+	lsofCount := func() int {
 		out, err := exec.Command("lsof", "-n", "-P", "-p", fmt.Sprint(os.Getpid())).Output()
 		if err != nil {
 			t.Fatalf("lsof が失敗: %v", err)
 		}
 		return strings.Count(string(out), "\n") - 1
+	}
+	// 🚨 待機中の keep-alive 接続（クライアント側とプロセス内の fake サーバ側の 2 本ずつ）を数えない。
+	// 数えると、プールに何本待機しているかで数が揺れて落ちる（issue 012。CI で fd 19 → 22）。
+	// 閉じるのは待機中のものだけなので、body を閉じ忘れて使い中のまま漏れた接続は残り、検出できる。
+	// サーバ側はクライアントが閉じたのを受けて非同期に閉じるので、数が落ち着くまで待つ。
+	countFDs := func() int {
+		sharedTransport.CloseIdleConnections()
+		prev := lsofCount()
+		for range 50 {
+			time.Sleep(20 * time.Millisecond)
+			n := lsofCount()
+			if n == prev {
+				return n
+			}
+			prev = n
+		}
+		t.Fatalf("fd の数が 1 秒待っても落ち着かない（最後 %d）", prev)
+		return 0
 	}
 	posts := map[int]map[string]any{}
 	for n := 1; n <= 20; n++ {

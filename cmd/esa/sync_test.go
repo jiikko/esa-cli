@@ -984,6 +984,118 @@ func TestSyncHelpSubcommand(t *testing.T) {
 	}
 }
 
+// 🚨 同じ実体の dir を、実パスとシンボリックリンクのパスの 2 つで指しても同じロックになること。
+// 文字列のまま鍵にすると 2 本の --apply が同じ dir に同時に書けた（v0.1.7 で実測）。
+// まだ無い dir（初回の --apply）でも、存在する親までを解決して同じ鍵になること。
+func TestSyncLockResolvesSymlinks(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ held, other string }{
+		{real, link}, // 既にある dir
+		{filepath.Join(real, "sub"), filepath.Join(link, "sub")},   // まだ無い dir（親がリンク）
+		{filepath.Join(link, "sub2"), filepath.Join(real, "sub2")}, // 逆向き
+	} {
+		l, err := acquireSyncLock(c.held)
+		if err != nil {
+			t.Fatalf("%s のロックを取れない: %v", c.held, err)
+		}
+		if l2, err := acquireSyncLock(c.other); err == nil || !strings.Contains(err.Error(), "書き込み中") {
+			if l2 != nil {
+				l2.release()
+			}
+			t.Errorf("%s を持っている間に、同じ実体の %s のロックが取れた: %v", c.held, c.other, err)
+		}
+		l.release()
+	}
+}
+
+// リンク先がまだ無いリンク（~/.claude/skills → ~/dotfiles/skills を張ったが実体はまだ無い初回）でも、
+// リンクのパスと実体のパスが同じロックになること（敵対的レビューの P2-1）。
+func TestSyncLockResolvesDanglingSymlink(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	base := t.TempDir()
+	missing := filepath.Join(base, "missing") // まだ作らない
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(missing, link); err != nil {
+		t.Fatal(err)
+	}
+	l, err := acquireSyncLock(filepath.Join(missing, "sub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.release()
+	if l2, err := acquireSyncLock(filepath.Join(link, "sub")); err == nil {
+		l2.release()
+		t.Error("リンク先がまだ無いリンクのパスで、同じ実体のロックが取れた")
+	}
+}
+
+// 親がリンクで、その中のリンクが ".." を含む相対ターゲット（リンク先はまだ無い）のとき、実体と同じ鍵になること。
+// 例: ~/.claude → ~/dotfiles/claude の中で skills → ../skills を張ったが実体はまだ無い初回（敵対的レビュー 2 周目）。
+func TestSyncLockResolvesRelativeDanglingUnderLinkedParent(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	base := t.TempDir()
+	inner := filepath.Join(base, "deep", "inner")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inner, filepath.Join(base, "L1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../missing", filepath.Join(inner, "link")); err != nil {
+		t.Fatal(err)
+	}
+	l, err := acquireSyncLock(filepath.Join(base, "deep", "missing", "sub")) // カーネルが解決する実体
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.release()
+	if l2, err := acquireSyncLock(filepath.Join(base, "L1", "link", "sub")); err == nil {
+		l2.release()
+		t.Error("親がリンク・相対の .. を含むリンクのパスで、同じ実体のロックが取れた")
+	}
+}
+
+// ロックを取った後にリンクが指し直されても、同じ文字列で登録した 2 本目は取れないこと
+// （実パスの鍵だけにすると 2 本目は指し直した先の鍵を取れてしまう。敵対的レビューの P2-2。旧実装では排他だった）。
+func TestSyncLockSurvivesSymlinkRetarget(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	base := t.TempDir()
+	x, y := filepath.Join(base, "x"), filepath.Join(base, "y")
+	for _, d := range []string{x, y} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(x, link); err != nil {
+		t.Fatal(err)
+	}
+	l, err := acquireSyncLock(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.release()
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(y, link); err != nil {
+		t.Fatal(err)
+	}
+	if l2, err := acquireSyncLock(link); err == nil {
+		l2.release()
+		t.Error("リンクを指し直した後、同じ文字列のパスの 2 本目がロックを取れた")
+	}
+}
+
 // ロック用のディレクトリを作れないとき、何のためのディレクトリかをエラーに出すこと。
 func TestSyncLockErrorExplainsPurpose(t *testing.T) {
 	cfg := t.TempDir()

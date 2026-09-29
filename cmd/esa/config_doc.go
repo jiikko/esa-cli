@@ -27,6 +27,14 @@ const configFileHeader = "# esa-cli 設定ファイル（esa config set / esa sy
 // parseConfigDoc は config.yml の内容を YAML のノードとして読む。最上位はマッピング 1 つに限る。
 // 空・コメントだけの内容なら、そのコメントを持つ空のマッピングを返す（無ければ既定のヘッダ）。
 func parseConfigDoc(data []byte) (*yaml.Node, error) {
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")) // BOM（残すとコメントだけのファイルのコメントを取りこぼす）
+	// profile / team の読み込み（loadFileConfig）と同じ読み方で読めるかを先に確かめる。重複したキー・team: [a] のような形は
+	// ノードとしては読めてしまうが、loadFileConfig は失敗する。ここで止めないと、sync add がそのまま書き、
+	// 重複した sync: の 2 つ目以降が黙って読まれなくなる（issue 011 の red team）。
+	var fc fileConfig
+	if err := yaml.Unmarshal(data, &fc); err != nil {
+		return nil, err
+	}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	var doc yaml.Node
 	if err := dec.Decode(&doc); err != nil && !errors.Is(err, io.EOF) {
@@ -54,6 +62,10 @@ func parseConfigDoc(data []byte) (*yaml.Node, error) {
 	}
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
 		return nil, errors.New("最上位がマッピング（key: value の並び）ではありません")
+	}
+	// sync.yml の中身をそのまま貼った形。黙って読むと sync の対象が 0 件になる。
+	if mappingValue(doc.Content[0], "targets") != nil {
+		return nil, errors.New("最上位に targets: があります（v0.1.8 までの sync.yml の書き方です。targets: を sync: に書き換えてください）")
 	}
 	return &doc, nil
 }
@@ -102,7 +114,11 @@ func writeConfigDoc(path string, doc *yaml.Node, validate func([]byte) error) er
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return writeFileAtomic(path, out, 0o600)
+	perm := fs.FileMode(0o600)
+	if fi, err := os.Stat(path); err == nil {
+		perm = fi.Mode().Perm() // 既存のファイルの権限は保つ（以前の os.WriteFile と同じ）
+	}
+	return writeFileAtomic(path, out, perm)
 }
 
 // mappingValue は最上位のマッピングからキーの値のノードを返す（無ければ nil）。
@@ -116,17 +132,38 @@ func mappingValue(top *yaml.Node, key string) *yaml.Node {
 }
 
 // setMappingScalar はキーの値を文字列にする（無ければ末尾に足す）。value が空ならキーごと消す。
-// 既存のキーの前後のコメントは残す。
+//
+// 🚨 値が変わらないキーには触らない。触ると、アンカー（&a）を持つ値を置き換えてエイリアスを壊し、
+// 空の profile: を消すときに、そのキーに付いたコメント（ファイル先頭のコメントは最初のキーに付く）まで消す（issue 011 の red team）。
+// キーを消すときは、キーに付いたコメントを次のキーか、マッピングの末尾へ移す。
 func setMappingScalar(top *yaml.Node, key, value string) {
 	for i := 0; i+1 < len(top.Content); i += 2 {
 		if top.Content[i].Value != key {
 			continue
 		}
-		if value == "" {
-			top.Content = append(top.Content[:i], top.Content[i+2:]...)
+		k, v := top.Content[i], top.Content[i+1]
+		cur := v.Value
+		if v.Kind != yaml.ScalarNode || v.Tag == "!!null" {
+			cur = ""
+			if v.Kind != yaml.ScalarNode {
+				cur = "\x00" // スカラーでない値（読み込みで弾かれるはず）は必ず書き換える
+			}
+		}
+		if cur == value {
 			return
 		}
-		v := top.Content[i+1]
+		if value == "" {
+			carry := joinComments(k.HeadComment, v.HeadComment, k.FootComment, v.FootComment)
+			top.Content = append(top.Content[:i], top.Content[i+2:]...)
+			if carry != "" {
+				if i < len(top.Content) {
+					top.Content[i].HeadComment = joinComments(carry, top.Content[i].HeadComment)
+				} else {
+					top.FootComment = joinComments(carry, top.FootComment)
+				}
+			}
+			return
+		}
 		*v = yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value, LineComment: v.LineComment, HeadComment: v.HeadComment, FootComment: v.FootComment}
 		return
 	}
@@ -136,4 +173,15 @@ func setMappingScalar(top *yaml.Node, key, value string) {
 	top.Content = append(top.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Value: key},
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value})
+}
+
+// joinComments は空でないコメントを改行でつなぐ。
+func joinComments(cs ...string) string {
+	var out []string
+	for _, c := range cs {
+		if c != "" {
+			out = append(out, c)
+		}
+	}
+	return strings.Join(out, "\n")
 }

@@ -92,16 +92,20 @@ func saveFileConfig(fc fileConfig) error {
 	top := doc.Content[0]
 	setMappingScalar(top, "profile", fc.Profile)
 	setMappingScalar(top, "team", fc.Team)
-	return writeConfigDoc(path, doc, func(out []byte) error {
+	err = writeConfigDoc(path, doc, func(out []byte) error {
 		var got fileConfig
 		if err := yaml.Unmarshal(out, &got); err != nil {
 			return err
 		}
 		if got != fc { // 書いたものを読み戻して、書こうとした値になっているか確かめる
-			return fmt.Errorf("config.yml へ書く内容を読み戻すと %+v になり、書こうとした %+v と違います", got, fc)
+			return fmt.Errorf("config.yml へ書く内容を読み戻すと %+v になり、書こうとした %+v と違います（<<: のマージで入っている値は消せません）", got, fc)
 		}
 		return nil
 	})
+	if err != nil {
+		return fmt.Errorf("%s に保存できません: %w", path, err)
+	}
+	return nil
 }
 
 // resolveDefault は「環境変数 > config.yml > 組み込み既定」の順で既定値を決める。

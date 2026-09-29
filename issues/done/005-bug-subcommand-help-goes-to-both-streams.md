@@ -193,9 +193,9 @@ typecheck を通る迂回が原理的に無限にあるので「全部塞ぐ」�
    **正常な config.yml のとき**の主張である、と下に注記した。
 3. **`esa config get --help` / `config set --help` は rc=2**（`--help` がキー名として
    扱われる）。`config` 配下で `--help` が効くのは `config` 自身と `config init` だけ。
-   変更前から同じでスコープ外。
+   変更前から同じでスコープ外。→ **issue 009 に起票**（2026-09-29）
 4. **`esa search -c nosuch q` が rc=1**（README の「2=使い方の誤り」と食い違う）。
-   `parseColumns` の error を `usageError` に包めば直るが、本 issue の範囲外。別 issue 候補。
+   `parseColumns` の error を `usageError` に包めば直るが、本 issue の範囲外。→ **issue 008 に起票**（2026-09-29）
 5. **`esa search foo --help` は `--help` がクエリの一部になる**。`checkNoTrailingFlags` は
    `f.formal` にある名前しか弾かず `help`/`h` は formal に無い。変更前から同じ。
 
@@ -209,8 +209,8 @@ typecheck を通る迂回が原理的に無限にあるので「全部塞ぐ」�
 ## 残タスク
 
 - 未着手: なし
-- スコープ外（別 issue 候補。根拠は上の「却下理由」）:
-  - `esa search -c nosuch` の rc が 1（README の契約では 2）
-  - `esa config get/set --help` が効かない
+- スコープ外（根拠は上の「却下理由」）: 2026-09-29 に起票して切り出した（どちらも同日に HEAD 08bda48 で再現を確認）
+  - `esa search -c nosuch` の rc が 1（README の契約では 2）→ issue 008
+  - `esa config get/set --help` が効かない → issue 009
 - 未検証: 認証が要る経路（`esa search` / `esa show` の実通信）。ただし今回の変更は
   引数解析より手前で完結しており、認証経路には触れていない。

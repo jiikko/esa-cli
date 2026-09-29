@@ -9,10 +9,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
@@ -38,6 +40,9 @@ const syncHelp = `esa sync - esa のカテゴリ配下の記事を、ローカ�
   Users/me/skills/foo/SKILL   → ~/.claude/skills/foo/SKILL.md
   Users/me/skills/README      → ~/.claude/skills/README.md
   Users/me/skills/foo/run.md  → ~/.claude/skills/foo/run.md   （.md で終わる名前はそのまま）
+  本文の最後の行に <!-- esa-sync: foo/SKILL.md --> と書いた記事は、記事名に関係なく、記事のカテゴリの
+  ディレクトリからその相対パスへ書く（例: Users/me/skills の記事 → ~/.claude/skills/foo/SKILL.md）。
+  その行は書き出すファイルから取り除く。指定らしいのに形が崩れた行はエラーにする。
   中身は記事本文の Markdown（front matter は付けない。改行は LF にそろえる）。WIP の記事も対象。
 
 書き込みの規則:
@@ -178,11 +183,12 @@ func syncList(args []string) error {
 
 // syncFile は書き出す 1 ファイル。
 type syncFile struct {
-	rel       string // dir からの相対パス（/ 区切り）
-	number    int
-	body      string
-	updatedBy string
-	updatedAt string
+	rel         string // dir からの相対パス（/ 区切り）
+	number      int
+	byDirective bool // 書き出し先を本文の指定（esa-sync:）で決めた
+	body        string
+	updatedBy   string
+	updatedAt   string
 }
 
 type syncStatus int
@@ -315,6 +321,9 @@ func printSyncPlan(w io.Writer, plan syncPlan, apply bool) {
 	var nNew, nChanged, nSame int
 	for _, it := range plan.items {
 		src := fmt.Sprintf("esa #%d", it.f.number)
+		if it.f.byDirective {
+			src += "（書き出し先は本文の指定による）"
+		}
 		if it.f.updatedBy != "" {
 			src += visible(fmt.Sprintf("（%s %s）", it.f.updatedBy, it.f.updatedAt))
 		}
@@ -397,14 +406,29 @@ func (c *client) fetchCategoryPosts(category string) (numbers []int, posts []map
 // excluded は検索に当たったがカテゴリが一致しなかった件数（in: は前方一致のため）。
 func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files []syncFile, excluded int, err error) {
 	var problems []string
-	owner := map[string]int{} // syncPathKey(rel) → 記事番号
+	owner := map[string]int{}        // syncPathKey(rel) → 記事番号
+	byDirective := map[string]bool{} // syncPathKey(rel) → 書き出し先を指定で決めたか
 	for i, p := range posts {
 		cat, _ := p["category"].(string)
 		name, _ := p["name"].(string)
-		rel, inside, err := syncRelPath(category, stdhtml.UnescapeString(cat), stdhtml.UnescapeString(name))
+		cat, name = stdhtml.UnescapeString(cat), stdhtml.UnescapeString(name)
+		// カテゴリの判定は記事名・本文の指定と独立に先に行う（指定があっても対象の外の記事は書かない）
+		dirParts, inside := syncCategoryParts(category, cat)
 		if !inside {
 			excluded++ // in: は前方一致なので、Users/me/skills2 のような隣のカテゴリも検索に当たる
 			continue
+		}
+		body := normalizeSyncBody(p["body_md"])
+		spec, rest, found, err := extractSyncDirective(body)
+		var rel string
+		switch {
+		case err != nil:
+		case found:
+			// 指定のある記事では記事名を書き出し先に使わない（記事名の / の検査もしない。人が読める題には / が普通に入る）
+			rel, err = syncDirectiveRelPath(dirParts, cat, spec)
+			body = rest
+		default:
+			rel, err = syncNamedRelPath(dirParts, cat, name)
 		}
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("記事 #%d: %v", numbers[i], err))
@@ -412,12 +436,17 @@ func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files
 		}
 		key := syncPathKey(rel)
 		if prev, dup := owner[key]; dup {
-			problems = append(problems, fmt.Sprintf("記事 #%d と #%d が同じファイル %s になります（大文字小文字・Unicode の正規化も区別しません。記事名を変えてください）",
-				prev, numbers[i], visible(rel)))
+			how := "記事名を変えてください"
+			if byDirective[key] || found {
+				how = "書き出し先の指定（esa-sync:）によるものがあります。記事の複製で指定が写っていないか確かめ、指定か記事名を変えてください"
+			}
+			problems = append(problems, fmt.Sprintf("記事 #%d と #%d が同じファイル %s になります（大文字小文字・Unicode の正規化も区別しません。%s）",
+				prev, numbers[i], visible(rel), how))
 			continue
 		}
 		owner[key] = numbers[i]
-		f := syncFile{rel: rel, number: numbers[i], body: normalizeSyncBody(p["body_md"])}
+		byDirective[key] = found
+		f := syncFile{rel: rel, number: numbers[i], body: body, byDirective: found}
 		if by, ok := p["updated_by"].(map[string]any); ok {
 			f.updatedBy, _ = by["screen_name"].(string)
 		}
@@ -550,26 +579,80 @@ func (c *client) listCategoryPostsOnce(category string) ([]int, error) {
 // syncRelPath は記事のカテゴリと名前から、dir からの相対パスを作る。
 // 記事が root カテゴリの配下でなければ inside=false。
 func syncRelPath(root, category, name string) (rel string, inside bool, err error) {
+	dirParts, inside := syncCategoryParts(root, category)
+	if !inside {
+		return "", false, nil
+	}
+	rel, err = syncNamedRelPath(dirParts, category, name)
+	return rel, true, err
+}
+
+// syncCategoryParts は記事のカテゴリが対象の配下かを判定し、配下なら対象の dir からのディレクトリの要素を返す
+// （要素の検査はしない。検査は syncJoinParts がファイルの要素と一緒に行う）。
+func syncCategoryParts(root, category string) (dirParts []string, inside bool) {
 	var sub string
 	switch {
 	case category == root:
 	case strings.HasPrefix(category, root+"/"):
 		sub = strings.TrimPrefix(category, root+"/")
 	default:
-		return "", false, nil
+		return nil, false
 	}
-	var parts []string
 	if sub != "" {
-		parts = strings.Split(sub, "/")
+		dirParts = strings.Split(sub, "/")
 	}
+	return dirParts, true
+}
+
+// syncNamedRelPath は今の規則（カテゴリ/記事名 → dir/…/記事名.md）で書き出し先を決める。書き出し先の指定が無い記事だけに使う。
+func syncNamedRelPath(dirParts []string, category, name string) (string, error) {
 	if strings.Contains(name, "/") {
-		return "", true, fmt.Errorf("記事名 %q に / が含まれています", visible(name))
+		return "", fmt.Errorf("記事名 %q に / が含まれています", visible(name))
 	}
 	file := name
 	if !strings.HasSuffix(strings.ToLower(file), ".md") { // SKILL.MD を SKILL.MD.md にしない
 		file += ".md"
 	}
-	parts = append(parts, file)
+	return syncJoinParts(append(append([]string(nil), dirParts...), file),
+		fmt.Sprintf("カテゴリ %q / 記事名 %q", visible(category), visible(name)))
+}
+
+// syncDirectiveRelPath は本文の書き出し先の指定（esa-sync:）で書き出し先を決める。
+// 指定は記事のカテゴリに対応するディレクトリからの相対（対象の dir からではない）。
+//
+// 🚨 dir 相対にしない。validateSyncTargets は dir の入れ子だけを止め、category の入れ子は通すので、dir 相対だと
+// 下位カテゴリの記事が上位の対象の最上位（手で置いた skill を含む）を狙え、今の規則より書ける範囲が広がる（issue 010 の red team）。
+// カテゴリ相対なら、記事が書けるディレクトリは今の規則と同じで、記事名の代わりにその下の相対パスを選べるだけ。
+func syncDirectiveRelPath(dirParts []string, category, spec string) (string, error) {
+	label := fmt.Sprintf("カテゴリ %q / 書き出し先の指定 %q", visible(category), visible(spec))
+	switch {
+	case !strings.HasSuffix(strings.ToLower(spec), ".md"):
+		return "", fmt.Errorf("書き出し先の指定は .md で終えてください（%s）", label)
+	case strings.HasPrefix(spec, "/"), strings.Contains(spec, `\`):
+		return "", fmt.Errorf("書き出し先の指定は / 区切りの相対パスにしてください（%s）", label)
+	case strings.Contains(spec, "--"): // HTML のコメントの中に -- は書けない（esa の画面ではそこでコメントが閉じ、残りが本文として出る）
+		return "", fmt.Errorf("書き出し先の指定に -- は使えません（%s）", label)
+	}
+	parts := strings.Split(spec, "/")
+	for _, p := range parts {
+		// NBSP・全角空白・ゼロ幅の文字で、正規のパスと見分けにくい別のディレクトリを作らせない
+		// （記事名と違い、指定は esa の名前の整形を通らない）。
+		if r, _ := utf8.DecodeRuneInString(p); p != "" && isSyncBlankRune(r) {
+			return "", fmt.Errorf("書き出し先の指定の要素 %q が空白で始まっています（%s）", visible(p), label)
+		}
+		if r, _ := utf8.DecodeLastRuneInString(p); p != "" && isSyncBlankRune(r) {
+			return "", fmt.Errorf("書き出し先の指定の要素 %q が空白で終わっています（%s）", visible(p), label)
+		}
+		if strings.IndexFunc(p, isInvisibleRune) >= 0 {
+			return "", fmt.Errorf("書き出し先の指定の要素 %q に見えない文字が含まれています（%s）", visible(p), label)
+		}
+	}
+	return syncJoinParts(append(append([]string(nil), dirParts...), parts...), label)
+}
+
+// syncJoinParts は dir からのパスの要素を検査して結合する（最後の要素がファイル）。
+// 今の規則のパスと書き出し先の指定のパスの両方がここを通る（検査を 2 つ書かない）。
+func syncJoinParts(parts []string, label string) (string, error) {
 	for i, p := range parts {
 		// ファイル名の上限は UTF-16 の単位で 255（APFS で実測: 絵文字 127 個は通り 128 個で失敗、NFD は分解した形で数える）。
 		// ファイルは一時ファイルの接尾辞を付けた長さで測る（測らないと、計画は通って書き込みの途中で失敗し、途中まで書いた状態になる）。
@@ -578,13 +661,71 @@ func syncRelPath(root, category, name string) (rel string, inside bool, err erro
 			n += syncTmpSuffix
 		}
 		if l := len(utf16.Encode([]rune(n))); l > syncNameMax {
-			return "", true, fmt.Errorf("名前 %q が長すぎます（ファイル名の上限は UTF-16 で %d。一時ファイルの分を含めて %d）", visible(p), syncNameMax, l)
+			return "", fmt.Errorf("名前 %q が長すぎます（ファイル名の上限は UTF-16 で %d。一時ファイルの分を含めて %d）", visible(p), syncNameMax, l)
 		}
 		if p == "" || p == "." || p == ".." || p == ".md" || strings.ContainsRune(p, 0) || strings.HasSuffix(syncPathKey(p), syncPathKey(syncTmpSuffix)) {
-			return "", true, fmt.Errorf("パスの要素 %q が不正です（カテゴリ %q / 記事名 %q）", visible(p), visible(category), visible(name))
+			return "", fmt.Errorf("パスの要素 %q が不正です（%s）", visible(p), label)
 		}
 	}
-	return path.Join(parts...), true, nil
+	return path.Join(parts...), nil
+}
+
+// syncDirectiveRe は本文の最後の空でない行に書く、書き出し先の指定の厳密な形。
+var syncDirectiveRe = regexp.MustCompile(`^<!-- esa-sync: (.+) -->$`)
+
+// extractSyncDirective は正規化済みの本文（normalizeSyncBody の後）から書き出し先の指定を取り出し、
+// 指定の行を取り除いた本文を返す。指定が無ければ found=false で本文はそのまま。
+//
+// 🚨 見るのは最後の空でない行だけで、その行は加工せずに照合する（先頭の空白を削ると、字下げのコード例を指定として食う）。
+// 厳密な形でないのに指定らしい行（全角のコロン・大文字・ゼロ幅の文字・引用など）はエラーにする。黙って今の規則に落とすと、
+// 書き出し先が変わったことに気づけず、指定の行も書き出したファイルに残る（issue 010 の red team）。
+func extractSyncDirective(body string) (spec, rest string, found bool, err error) {
+	lines := strings.Split(body, "\n")
+	i := lastNonBlankLine(lines, len(lines))
+	if i < 0 {
+		return "", body, false, nil
+	}
+	m := syncDirectiveRe.FindStringSubmatch(lines[i])
+	if m == nil {
+		if looksLikeSyncDirective(lines[i]) {
+			return "", "", false, fmt.Errorf("最後の行 %q が書き出し先の指定の形になっていません（<!-- esa-sync: パス --> の形で 1 行に書いてください）", visible(lines[i]))
+		}
+		return "", body, false, nil
+	}
+	if j := lastNonBlankLine(lines, i); j >= 0 && looksLikeSyncDirective(lines[j]) {
+		return "", "", false, fmt.Errorf("書き出し先の指定が 2 つあります（%q と %q。1 つにしてください）", visible(lines[j]), visible(lines[i]))
+	}
+	rest = strings.TrimRight(strings.Join(lines[:i], "\n"), "\n")
+	if rest != "" {
+		rest += "\n"
+	}
+	return m[1], rest, true, nil
+}
+
+// lastNonBlankLine は lines[:end] の中で最後の空でない行の添字を返す（無ければ -1）。
+func lastNonBlankLine(lines []string, end int) int {
+	for k := end - 1; k >= 0; k-- {
+		if strings.IndexFunc(lines[k], func(r rune) bool { return !isSyncBlankRune(r) }) >= 0 {
+			return k
+		}
+	}
+	return -1
+}
+
+// isSyncBlankRune は「空の行」を作る文字（空白と見えない文字）。U+200B だけの行の後ろにある指定も見つけるため、見えない文字も数える。
+func isSyncBlankRune(r rune) bool {
+	return unicode.Is(unicode.White_Space, r) || isInvisibleRune(r)
+}
+
+// looksLikeSyncDirective は、厳密な形でなくても書き出し先の指定を意図したと読める行か（NFKC・見えない文字を除く・小文字で比べる）。
+func looksLikeSyncDirective(line string) bool {
+	s := strings.ToLower(strings.Map(func(r rune) rune {
+		if isInvisibleRune(r) {
+			return -1
+		}
+		return r
+	}, norm.NFKC.String(line)))
+	return strings.Contains(s, "esa-sync") || strings.Contains(s, "esa_sync") || strings.Contains(s, "esasync")
 }
 
 // normalizeSyncBody は本文の改行を LF にそろえ、空でなければ末尾を改行で終える。

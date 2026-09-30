@@ -24,10 +24,14 @@ import (
 // syncFrontMatterKey は metadata の下に書く、書き出し先の指定のキー。
 const syncFrontMatterKey = "esa-sync"
 
-// findSyncDirective は本文から書き出し先の指定を探す（front matter の metadata.esa-sync と、末尾のコメント）。
-// rest は書き出す本文（front matter の指定なら本文のまま、コメントの指定ならその行を除いたもの）。
+// findSyncDirective は本文から書き出し先の指定を探す（front matter の metadata.esa-sync、コメントで包んだ front matter の
+// metadata.esa-sync、末尾のコメント）。rest は書き出す本文（front matter の指定なら本文のまま、末尾のコメントの指定ならその行を除いたもの）。
 func findSyncDirective(body string) (spec, rest string, found bool, err error) {
 	fmSpec, fmFound, err := extractFrontMatterDirective(body)
+	if err != nil {
+		return "", "", false, err
+	}
+	cfSpec, cfFound, err := extractCommentedFrontMatterDirective(body)
 	if err != nil {
 		return "", "", false, err
 	}
@@ -35,14 +39,86 @@ func findSyncDirective(body string) (spec, rest string, found bool, err error) {
 	if err != nil {
 		return "", "", false, err
 	}
-	if fmFound && found {
-		return "", "", false, fmt.Errorf("書き出し先の指定が front matter の metadata.%s（%q）と最後の行のコメント（%q）の 2 つにあります（1 つにしてください）",
-			syncFrontMatterKey, visible(fmSpec), visible(spec))
+	// front matter は 1 行目が ---、コメントで包んだものは最初の空でない行が <!-- なので、この 2 つは同時には見つからない。
+	// 両方が skip なら意味が同じなので止めない（v0.4.0 の注意に従って末尾に skip を足し、包んだ方も残した記事。issue 016 の red team）
+	if (fmFound || cfFound) && found && spec == syncSkipSpec && (fmSpec == syncSkipSpec || cfSpec == syncSkipSpec) {
+		return syncSkipSpec, rest, true, nil
 	}
-	if fmFound {
+	if (fmFound || cfFound) && found {
+		where, v := "front matter", fmSpec
+		if cfFound {
+			where, v = "コメントで包んだ front matter", cfSpec
+		}
+		return "", "", false, fmt.Errorf("書き出し先の指定が %s の metadata.%s（%q）と最後の行のコメント（%q）の 2 つにあります（1 つにしてください）",
+			where, syncFrontMatterKey, visible(v), visible(spec))
+	}
+	switch {
+	case fmFound:
 		return fmSpec, body, true, nil
+	case cfFound:
+		return cfSpec, body, true, nil
 	}
 	return spec, rest, found, nil
+}
+
+// syncCommentedFrontMatter は「コメントで包んだ front matter」を探す（issue 016）。esa のプレビューに metadata を出さずに
+// 指定を書くための形で、本文の最初の空でない行が <!-- だけ、次の空でない行が --- だけのものを、包もうとしたとみなす（block）。
+// 次の --- だけの行までが中身で、その次の空でない行が --> だけなら閉じている（closed）。
+// inner は中身の行（閉じが無ければ、front matter の閉じの無いときと同じく最初の空行まで）。
+// 行の前後の空白は許す（コメントの中は esa の画面に出ないので、見えない空白で効かなくなるのを避ける）。
+func syncCommentedFrontMatter(body string) (fm string, block, closed bool, inner []string) {
+	lines := strings.Split(body, "\n")
+	f := firstNonBlankLine(lines)
+	if f < 0 || strings.TrimSpace(strings.TrimPrefix(lines[f], "\ufeff")) != "<!--" {
+		return "", false, false, nil
+	}
+	start := f + 1
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	if start >= len(lines) || strings.TrimSpace(lines[start]) != "---" {
+		return "", false, false, nil
+	}
+	for i := start + 1; i < len(lines); i++ {
+		switch strings.TrimSpace(lines[i]) {
+		case "-->": // 閉じの --- の前にコメントが閉じた
+			return "", true, false, lines[start+1 : i]
+		case "---":
+			inner = lines[start+1 : i]
+			for j := i + 1; j < len(lines); j++ {
+				if t := strings.TrimSpace(lines[j]); t != "" {
+					return strings.Join(inner, "\n"), true, t == "-->", inner
+				}
+			}
+			return "", true, false, inner
+		}
+	}
+	return "", true, false, untilBlankLine(lines[start+1:])
+}
+
+// extractCommentedFrontMatterDirective はコメントで包んだ front matter の metadata.esa-sync を読む（issue 016）。
+// 中身の読み方と書き損じの扱いは front matter と同じ（frontMatterTextDirective を通す）。
+// 包み方が崩れたもの（閉じの --- か --> が無い）は、中に指定らしい行があれば止める（黙って記事名の規則に戻さない）。
+func extractCommentedFrontMatterDirective(body string) (spec string, found bool, err error) {
+	fm, block, closed, inner := syncCommentedFrontMatter(body)
+	if !block {
+		return "", false, nil
+	}
+	if !closed {
+		if l, hit := firstSyncKeyLine(inner); hit {
+			return "", false, fmt.Errorf("コメントで包んだ front matter は <!-- ・ --- ・中身・ --- ・ --> の順に 1 行ずつ書いてください"+
+				"（閉じの --- か --> がありません。中に書き出し先の指定 %q らしい行があるため止めます）", visible(l))
+		}
+		return "", false, nil
+	}
+	spec, found, err = frontMatterTextDirective(fm, "コメントで包んだ front matter")
+	// 🚨 包んだ front matter に書けるのは skip だけ。パスを書くと、書き出したファイルでは front matter にならない（コメントの中）ので、
+	// skill の name / description の無い壊れた SKILL.md を黙って作る（issue 016 の red team）。この形が要るのは esa の上だけで読む記事を外すときだけ
+	if err == nil && found && spec != syncSkipSpec {
+		return "", false, fmt.Errorf("コメントで包んだ front matter の metadata.%s に書けるのは %s だけです（%q。書き出すなら、包まない front matter か末尾のコメントに書いてください）",
+			syncFrontMatterKey, syncSkipSpec, visible(spec))
+	}
+	return spec, found, err
 }
 
 // syncFrontMatter は本文の先頭の front matter（1 行目の --- から次の --- の行まで）の中身を返す。
@@ -97,6 +173,12 @@ func extractFrontMatterDirective(body string) (spec string, found bool, err erro
 		}
 		return "", false, nil
 	}
+	return frontMatterTextDirective(fm, "front matter")
+}
+
+// frontMatterTextDirective は front matter の中身（--- と --- の間）から metadata.esa-sync を読む。where はエラーの文言に使う置き場所の名前。
+// front matter とコメントで包んだ front matter の両方がここを通る（検査を 2 つ書かない）。
+func frontMatterTextDirective(fm, where string) (spec string, found bool, err error) {
 	docs, err := decodeSyncYAML(fm)
 	if err != nil || len(docs) > 1 {
 		// 壊れた YAML は Claude Code も「フィールドなし」で読む。文書が 2 つ（中に --- の行）なら 2 つ目以降は読まれない
@@ -107,7 +189,7 @@ func extractFrontMatterDirective(body string) (spec string, found bool, err erro
 			why = fmt.Sprintf("YAML が読めません（%v）", err)
 		}
 		if l, hit := firstSyncKeyLine(strings.Split(fm, "\n")); hit {
-			return "", false, fmt.Errorf("front matter の %s。中に書き出し先の指定 %q らしい行があるため止めます", why, visible(l))
+			return "", false, fmt.Errorf("%s の %s。中に書き出し先の指定 %q らしい行があるため止めます", where, why, visible(l))
 		}
 		return "", false, nil
 	}
@@ -130,16 +212,16 @@ func extractFrontMatterDirective(body string) (spec string, found bool, err erro
 	}
 	switch {
 	case len(problems) > 0:
-		return "", false, fmt.Errorf("front matter の %s は書き出し先の指定として読みません（metadata の下に %s: パス の形で書いてください）",
-			strings.Join(problems, "・"), syncFrontMatterKey)
+		return "", false, fmt.Errorf("%s の %s は書き出し先の指定として読みません（metadata の下に %s: パス の形で書いてください）",
+			where, strings.Join(problems, "・"), syncFrontMatterKey)
 	case len(specs) == 0:
 		return "", false, nil
 	case len(specs) > 1:
-		return "", false, fmt.Errorf("front matter に metadata.%s が %d 個あります（1 つにしてください）", syncFrontMatterKey, len(specs))
+		return "", false, fmt.Errorf("%s に metadata.%s が %d 個あります（1 つにしてください）", where, syncFrontMatterKey, len(specs))
 	}
 	v := specs[0]
 	if v.Kind != yaml.ScalarNode || v.Tag != "!!str" || v.Value == "" {
-		return "", false, errors.New("front matter の metadata." + syncFrontMatterKey + " は、書き出し先のパスの文字列にしてください")
+		return "", false, errors.New(where + " の metadata." + syncFrontMatterKey + " は、書き出し先のパスの文字列にしてください")
 	}
 	return v.Value, true, nil
 }

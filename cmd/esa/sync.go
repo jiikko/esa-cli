@@ -46,6 +46,8 @@ const syncHelp = `esa sync - esa のカテゴリ配下の記事を、ローカ�
   パスの代わりに skip と書いた記事（<!-- esa-sync: skip --> / metadata の esa-sync: skip）は書き出さない
   （esa の上だけで読む説明の記事など。dry-run と --apply に「書き出さない」と出る。記事名のパスのローカルのファイルには触らない）。
   書き出す記事の本文に skip の指定らしい行があるのに効いていなければ、「注意:」を出す。
+  esa のプレビューに metadata を出したくないときは、skip に限り、front matter を本文の先頭で <!-- と --> の行で包んでもよい
+  （<!-- / --- / metadata: / esa-sync: skip / --- / --> を 1 行ずつ。中身の書き損じの扱いは front matter と同じ）。
   指定らしいのに形が崩れたもの（metadata の外の esa-sync・崩れたコメントなど）はエラーにする。
   中身は記事本文の Markdown（esa の記事情報を front matter として足さない。改行は LF にそろえる）。WIP の記事も対象。
 

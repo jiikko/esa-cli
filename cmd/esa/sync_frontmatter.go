@@ -66,8 +66,9 @@ func syncFrontMatter(body string) (string, bool) {
 // metadata の外の指定らしいキー、文字列でない値、キーの重複、閉じの無い・1 行目が崩れた・壊れた YAML の front matter の中の指定らしい行。
 //
 // 「指定らしい」の判定は 2 つ（issue 013 の red team 1〜2 周目）:
-//   - YAML として読めたとき: キーが区切りを除いてちょうど esasync で（syncKeyLike）、値が .md で終わるもの
-//   - 読めない・閉じの無いとき: 行の中に esa〜sync の並びと .md があるもの（firstSyncKeyLine）。閉じの無いときは最初の空行までしか見ない
+//   - YAML として読めたとき: キーが区切りを除いてちょうど esasync で（syncKeyLike）、値が .md で終わるか、大文字小文字を問わず skip のもの
+//   - 読めない・閉じの無いとき: 行の中に esa〜sync の並びと .md があるもの、または esa〜sync のキーの値がちょうど skip のもの
+//     （firstSyncKeyLine / syncKeyLineIsSkip）。閉じの無いときは最初の空行までしか見ない
 //
 // 値の .md を条件に入れるのは、水平線の --- で始まる普通の記事や説明の文を止めないため
 // （010 の崩れの検出 syncDirectiveLooseRe も「コロンの後に .md のパス」を条件にしている）。
@@ -122,7 +123,7 @@ func extractFrontMatterDirective(body string) (spec string, found bool, err erro
 				specs = append(specs, v)
 				return
 			}
-			if v.Kind == yaml.ScalarNode && strings.HasSuffix(strings.ToLower(v.Value), ".md") {
+			if v.Kind == yaml.ScalarNode && (strings.HasSuffix(strings.ToLower(v.Value), ".md") || strings.EqualFold(v.Value, syncSkipSpec)) {
 				problems = append(problems, visible(strings.Join(append(append([]string(nil), p...), k.Value), ".")))
 			}
 		})
@@ -215,11 +216,23 @@ func firstSyncKeyLine(lines []string) (string, bool) {
 		if strings.HasPrefix(strings.TrimSpace(n), "<!--") {
 			continue // 末尾のコメントの指定（issue 010）とその崩れは extractSyncDirective が見る
 		}
-		if syncLineRe.MatchString(n) && strings.Contains(n, ".md") {
+		if (syncLineRe.MatchString(n) && strings.Contains(n, ".md")) || syncKeyLineIsSkip(l) {
 			return l, true
 		}
 	}
 	return "", false
+}
+
+// syncKeyLineIsSkip は、行の esa〜sync のキーの値がちょうど skip か（読めない front matter の中。キーの前に何があってもよい:
+// 1 行にまとめた「metadata: esa-sync: skip」・閉じ忘れのフロー形式「metadata: {esa-sync: skip」。issue 015 の red team）。
+// 値が skip の後ろに文を続けるもの（「esa-sync: skip で書き出さない」）は説明の文として拾わない。
+func syncKeyLineIsSkip(l string) bool {
+	n := normalizeSyncLine(l)
+	loc := syncLineRe.FindStringIndex(n)
+	if loc == nil {
+		return false
+	}
+	return strings.Trim(n[loc[1]:], " \t\"'{}[],") == syncSkipSpec
 }
 
 // untilBlankLine は最初の空行の手前までを返す（閉じの無い front matter の範囲。水平線で始まる記事の本文を見ない）。

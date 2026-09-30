@@ -186,7 +186,7 @@ func TestMapSyncFilesWithDirective(t *testing.T) {
 			numbers = append(numbers, i+1)
 			posts = append(posts, post(i+1, p.category, p.name, p.body))
 		}
-		files, _, err := mapSyncFiles(root, numbers, posts)
+		files, _, _, err := mapSyncFiles(root, numbers, posts)
 		if tc.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("%s: err = %v; want %q を含むエラー", tc.name, err, tc.wantErr)

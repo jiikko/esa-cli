@@ -142,7 +142,7 @@ func TestMapSyncFilesWithFrontMatterDirective(t *testing.T) {
 		{".md で終わらない", "---\nmetadata:\n  esa-sync: a/run.sh\n---\n", "", ".md で終えて"},
 	}
 	for _, tc := range cases {
-		files, _, err := mapSyncFiles("R", []int{1}, []map[string]any{post(1, "R", "題", tc.body)})
+		files, _, _, err := mapSyncFiles("R", []int{1}, []map[string]any{post(1, "R", "題", tc.body)})
 		if tc.wantErr != "" {
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Errorf("%s: err = %v; want %q を含むエラー", tc.name, err, tc.wantErr)
@@ -197,8 +197,8 @@ func TestSyncPrintsSkillWarning(t *testing.T) {
 // 指定のある記事には注意を出さない（agents などに自分のパスを指定して注意を消す使い方。issue 013 の red team 3 周目）。
 func TestSyncSkillWarningNotForDirective(t *testing.T) {
 	body := "---\nname: r\ndescription: d\nmetadata:\n  esa-sync: agents/reviewer.md\n---\n"
-	files, _, err := mapSyncFiles("R", []int{1}, []map[string]any{post(1, "R", "reviewer", body)})
-	if err != nil || len(files) != 1 || files[0].rel != "agents/reviewer.md" || files[0].warn != "" {
+	files, _, _, err := mapSyncFiles("R", []int{1}, []map[string]any{post(1, "R", "reviewer", body)})
+	if err != nil || len(files) != 1 || files[0].rel != "agents/reviewer.md" || len(files[0].warns) != 0 {
 		t.Errorf("files = %+v, err = %v; want agents/reviewer.md に注意なし", files, err)
 	}
 }

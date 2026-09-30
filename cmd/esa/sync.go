@@ -43,6 +43,9 @@ const syncHelp = `esa sync - esa のカテゴリ配下の記事を、ローカ�
   （例: Users/me/skills の記事で foo/SKILL.md → ~/.claude/skills/foo/SKILL.md）。書き方は 2 通り（両方はエラー）:
     - skill の front matter の metadata の下に esa-sync: foo/SKILL.md（front matter はそのまま書き出す）
     - 本文の最後の行に <!-- esa-sync: foo/SKILL.md -->（その行は書き出すファイルから取り除く）
+  パスの代わりに skip と書いた記事（<!-- esa-sync: skip --> / metadata の esa-sync: skip）は書き出さない
+  （esa の上だけで読む説明の記事など。dry-run と --apply に「書き出さない」と出る。記事名のパスのローカルのファイルには触らない）。
+  書き出す記事の本文に skip の指定らしい行があるのに効いていなければ、「注意:」を出す。
   指定らしいのに形が崩れたもの（metadata の外の esa-sync・崩れたコメントなど）はエラーにする。
   中身は記事本文の Markdown（esa の記事情報を front matter として足さない。改行は LF にそろえる）。WIP の記事も対象。
 
@@ -199,12 +202,21 @@ func syncList(args []string) error {
 type syncFile struct {
 	rel         string // dir からの相対パス（/ 区切り）
 	number      int
-	byDirective bool   // 書き出し先を本文の指定（esa-sync:）で決めた
-	catDir      string // 記事のカテゴリに対応するディレクトリ（dir からの相対。指定のある記事で、どこからが指定かを見分ける）
-	warn        string // dry-run と --apply の出力に添える注意（syncSkillWarning）
+	byDirective bool     // 書き出し先を本文の指定（esa-sync:）で決めた
+	catDir      string   // 記事のカテゴリに対応するディレクトリ（dir からの相対。指定のある記事で、どこからが指定かを見分ける）
+	warns       []string // dry-run と --apply の出力に添える注意（syncSkillWarning / syncSkipIntentWarning）
 	body        string
 	updatedBy   string
 	updatedAt   string
+}
+
+// syncSkipSpec は書き出し先の指定の値で「書き出さない」を表す（issue 015）。パスは .md で終わるので取り違えない。
+const syncSkipSpec = "skip"
+
+// syncSkipped は書き出し先の指定が skip の、書き出さない記事。
+type syncSkipped struct {
+	number         int
+	category, name string
 }
 
 type syncStatus int
@@ -218,7 +230,8 @@ const (
 // syncPlan は 1 対象の計画。書き出し先の今の内容と比べた状態を、ファイルごとに持つ。
 type syncPlan struct {
 	items     []syncPlanItem
-	leftovers []string // 前回中断したときの一時ファイル（計画に載っているファイルの分だけ。走査はしない）
+	skipped   []syncSkipped // 書き出さない記事（表示するだけ。書き込み（予定）の件数に数えない）
+	leftovers []string      // 前回中断したときの一時ファイル（計画に載っているファイルの分だけ。走査はしない）
 }
 
 type syncPlanItem struct {
@@ -262,11 +275,11 @@ func runSyncTarget(c *client, t syncTarget, apply bool, w io.Writer) (syncPlan, 
 	if err != nil {
 		return syncPlan{}, err
 	}
-	files, excluded, err := mapSyncFiles(t.Category, numbers, posts)
+	files, skipped, excluded, err := mapSyncFiles(t.Category, numbers, posts)
 	if err != nil {
 		return syncPlan{}, err
 	}
-	if len(files) == 0 && excluded > 0 {
+	if len(files) == 0 && len(skipped) == 0 && excluded > 0 {
 		fmt.Fprintf(w, "  注意: 検索に当たった %d 件はどれもカテゴリが %q と一致しないため除きました（大文字小文字・表記を esa と揃えてください）\n",
 			excluded, t.Category)
 	}
@@ -282,6 +295,7 @@ func runSyncTarget(c *client, t syncTarget, apply bool, w io.Writer) (syncPlan, 
 	if err != nil {
 		return syncPlan{}, err
 	}
+	plan.skipped = skipped
 	printSyncPlan(w, plan, apply)
 	if !apply {
 		return plan, nil
@@ -362,11 +376,19 @@ func printSyncPlan(w io.Writer, plan syncPlan, apply bool) {
 			fmt.Fprintf(w, "    %s\n", visible(line))
 		}
 		// 変更なしの記事にも出す（書き損じのまま一度書き出した後も、気づけるように）
-		if it.f.warn != "" {
-			fmt.Fprintf(w, "  注意: %s（esa #%d）: %s\n", rel, it.f.number, it.f.warn)
+		for _, warn := range it.f.warns {
+			fmt.Fprintf(w, "  注意: %s（esa #%d）: %s\n", rel, it.f.number, warn)
 		}
 	}
-	fmt.Fprintf(w, "  記事 %d 件: 新規 %d / 変更 %d / 変更なし %d\n", len(plan.items), nNew, nChanged, nSame)
+	// 🚨 書き出さない記事も必ず出す（黙って飛ばすと、指定が効いたのか記事が一覧に無いのかを見分けられない）
+	for _, sk := range plan.skipped {
+		fmt.Fprintf(w, "  - %s  書き出さない esa #%d（書き出し先の指定 esa-sync: %s）\n", visible(sk.category+"/"+sk.name), sk.number, syncSkipSpec)
+	}
+	summary := fmt.Sprintf("  記事 %d 件: 新規 %d / 変更 %d / 変更なし %d", len(plan.items), nNew, nChanged, nSame)
+	if len(plan.skipped) > 0 {
+		summary += fmt.Sprintf(" / 書き出さない %d", len(plan.skipped))
+	}
+	fmt.Fprintln(w, summary)
 	if !apply && len(plan.leftovers) > 0 {
 		fmt.Fprintf(w, "  注意: 前回中断したとき（か、いま別の --apply が書いている）一時ファイルが %d 件あります（--apply で消します）: %s\n",
 			len(plan.leftovers), visible(strings.Join(plan.leftovers, ", ")))
@@ -423,8 +445,8 @@ func (c *client) fetchCategoryPosts(category string) (numbers []int, posts []map
 }
 
 // mapSyncFiles は記事（numbers[i] と posts[i] が対）を書き出すファイルへ対応付け、記事どうしの衝突を検査する。
-// excluded は検索に当たったがカテゴリが一致しなかった件数（in: は前方一致のため）。
-func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files []syncFile, excluded int, err error) {
+// excluded は検索に当たったがカテゴリが一致しなかった件数（in: は前方一致のため）。skipped は書き出し先の指定が skip の記事。
+func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files []syncFile, skipped []syncSkipped, excluded int, err error) {
 	var problems []string
 	owner := map[string]int{}        // syncPathKey(rel) → 記事番号
 	byDirective := map[string]bool{} // syncPathKey(rel) → 書き出し先を指定で決めたか
@@ -440,6 +462,11 @@ func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files
 		}
 		body := normalizeSyncBody(p["body_md"])
 		spec, rest, found, err := findSyncDirective(body)
+		// skip はパスの検査・衝突の検査より前で分ける（書かない記事はファイルの鍵を持たない。後ろで分けると空のパスどうしが衝突する）
+		if err == nil && found && spec == syncSkipSpec {
+			skipped = append(skipped, syncSkipped{number: numbers[i], category: cat, name: name})
+			continue
+		}
 		var rel string
 		switch {
 		case err != nil:
@@ -468,7 +495,12 @@ func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files
 		byDirective[key] = found
 		f := syncFile{rel: rel, number: numbers[i], body: body, byDirective: found, catDir: path.Join(dirParts...)}
 		if !found {
-			f.warn = syncSkillWarning(body, rel)
+			if warn := syncSkillWarning(body, rel); warn != "" {
+				f.warns = append(f.warns, warn)
+			}
+		}
+		if warn := syncSkipIntentWarning(body); warn != "" {
+			f.warns = append(f.warns, warn)
 		}
 		if by, ok := p["updated_by"].(map[string]any); ok {
 			f.updatedBy, _ = by["screen_name"].(string)
@@ -493,10 +525,11 @@ func mapSyncFiles(category string, numbers []int, posts []map[string]any) (files
 		}
 	}
 	if len(problems) > 0 {
-		return nil, 0, fmt.Errorf("ファイルに対応付けられない記事があるため、この対象は 1 件も書き込みません:\n  %s", strings.Join(problems, "\n  "))
+		return nil, nil, 0, fmt.Errorf("ファイルに対応付けられない記事があるため、この対象は 1 件も書き込みません:\n  %s", strings.Join(problems, "\n  "))
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].rel < files[j].rel })
-	return files, excluded, nil
+	sort.Slice(skipped, func(i, j int) bool { return skipped[i].number < skipped[j].number })
+	return files, skipped, excluded, nil
 }
 
 // syncIsSameOrAncestor は d が p と同じか、p の上位のディレクトリか（syncPathKey で比べる）。
@@ -675,7 +708,7 @@ func syncDirectiveRelPath(dirParts []string, category, spec string) (string, err
 	label := fmt.Sprintf("カテゴリ %q / 書き出し先の指定 %q", visible(category), visible(spec))
 	switch {
 	case !strings.HasSuffix(strings.ToLower(spec), ".md"):
-		return "", fmt.Errorf("書き出し先の指定は .md で終えてください（%s）", label)
+		return "", fmt.Errorf("書き出し先の指定は .md で終えてください。書き出さないなら小文字で %s と書いてください（%s）", syncSkipSpec, label)
 	case strings.HasPrefix(spec, "/"), strings.Contains(spec, `\`):
 		return "", fmt.Errorf("書き出し先の指定は / 区切りの相対パスにしてください（%s）", label)
 	}
@@ -732,19 +765,29 @@ func extractSyncDirective(body string) (spec, rest string, found bool, err error
 	if i < 0 {
 		return "", body, false, nil
 	}
+	m := syncDirectiveRe.FindStringSubmatch(lines[i])
+	// 最後の行が skip なら、skip らしい別の行（使い方の例）とは意味が食い違わないので止めない（issue 015 の red team）
+	sameAsSkip := func(l string) bool { return m != nil && m[1] == syncSkipSpec && looksLikeSkipDirective(l) }
 	// 先頭に置く間違いが一番起きやすい（skill の front matter の上に書く）。黙って見逃すと、指定の行が 1 行目に残り、
 	// 書き出し先も記事名の規則のままになる。本文の途中（コード例）は触らない。
-	if f := firstNonBlankLine(lines); f >= 0 && f != i && looksLikeSyncDirective(lines[f]) {
+	if f := firstNonBlankLine(lines); f >= 0 && f != i && looksLikeSyncDirective(lines[f]) && !sameAsSkip(lines[f]) {
 		return "", "", false, fmt.Errorf("書き出し先の指定 %q が本文の先頭にあります（本文の最後の行に書いてください）", visible(lines[f]))
 	}
-	m := syncDirectiveRe.FindStringSubmatch(lines[i])
+	// 🚨 厳密な形の skip が本文の途中にあるのに最後の行が skip でなければ止める。黙って見逃すと、書かないつもりの記事が書き出される
+	// （.md の指定と違い、被害は別のファイルの上書き。issue 015 の red team）。コードブロックの中（使い方の例）は見ない。
+	if k := syncStraySkipLine(lines, i); k >= 0 && (m == nil || m[1] != syncSkipSpec) {
+		return "", "", false, fmt.Errorf("書き出さない指定 %q が本文の途中（%d 行目）にあります（効かせるなら本文の最後の行に書いてください）", visible(lines[k]), k+1)
+	}
 	if m == nil {
+		if looksLikeSkipDirective(lines[i]) {
+			return "", "", false, fmt.Errorf("最後の行 %q が書き出さない指定の形になっていません（<!-- esa-sync: %s --> の形で 1 行に書いてください）", visible(lines[i]), syncSkipSpec)
+		}
 		if looksLikeSyncDirective(lines[i]) {
 			return "", "", false, fmt.Errorf("最後の行 %q が書き出し先の指定の形になっていません（<!-- esa-sync: パス --> の形で 1 行に書いてください）", visible(lines[i]))
 		}
 		return "", body, false, nil
 	}
-	if j := lastNonBlankLine(lines, i); j >= 0 && looksLikeSyncDirective(lines[j]) {
+	if j := lastNonBlankLine(lines, i); j >= 0 && looksLikeSyncDirective(lines[j]) && !sameAsSkip(lines[j]) {
 		return "", "", false, fmt.Errorf("書き出し先の指定が 2 つあります（%q と %q。1 つにしてください）", visible(lines[j]), visible(lines[i]))
 	}
 	// HTML のコメントの中に -- は書けない（esa の画面ではそこでコメントが閉じ、残りが本文として出る）。front matter の指定には関係ない
@@ -802,15 +845,107 @@ func isSyncBlankRune(r rune) bool {
 // .md で終わらないパス・1 行に収めずに複数行へ分けたもの・指定の後ろに追記して指定が本文の途中に押し出されたもの。
 var syncDirectiveLooseRe = regexp.MustCompile(`(^|[^a-z0-9])esa[\s\-\x{2010}-\x{2015}\x{2212}\x{2043}\x{2e3a}\x{30fc}\x{301c}~\x{30fb}./_\\]*sync[\s` + "`" + `*_\\]*[:\x{2236}]\s*\S*\.md($|[^a-z0-9])`)
 
-// looksLikeSyncDirective は、厳密な形でなくても書き出し先の指定を意図したと読める行か。
-func looksLikeSyncDirective(line string) bool {
-	s := strings.ToLower(strings.Map(func(r rune) rune {
+// syncSkipLooseRe は崩れた skip の指定を拾う形（syncDirectiveLooseRe と同じ正規化の後に当てる。issue 015）。
+//
+// .md のパスと違い skip は説明の文に普通に出るので、行が指定だけでできているときに限る: 前後に許すのは空白・コメントの記号
+// （<! -- — > と HTML のエンティティ）・コード / 強調の記法・引用符だけ。「…と書くと esa-sync: skip になる」のような文や
+// 「# esa-sync: skip を使う」の見出し、skipping は当てない（issue 015 の反証レビュー P1）。
+// 崩れた skip を黙って記事名の規則に戻すと、書かないつもりの記事が書き出されて別のファイルを上書きしうる（.md の崩れより被害の向きが悪い）。
+// 検出しない形: skip の綴りの崩れ・行の前後に文を付けたもの・YAML の行末コメント付き（dry-run の書き出し先で気づく）。
+var syncSkipLooseRe = regexp.MustCompile(`^(?:&lt;|&gt;|[\s<!>\-\x{2010}-\x{2015}*_` + "`" + `\\"'])*esa[\s\-\x{2010}-\x{2015}\x{2212}\x{2043}\x{2e3a}\x{30fc}\x{301c}~\x{30fb}./_\\]*sync[\s` + "`" + `*_\\"']*[:\x{2236}]\s*["']?skip(?:&lt;|&gt;|[\s<!>\-\x{2010}-\x{2015}*_` + "`" + `\\"'])*$`)
+
+// normalizeSyncLine は崩れの検出の前の正規化（NFKC・見えない文字を除く・小文字）。
+func normalizeSyncLine(line string) string {
+	return strings.ToLower(strings.Map(func(r rune) rune {
 		if isInvisibleRune(r) {
 			return -1
 		}
 		return r
 	}, norm.NFKC.String(line)))
-	return syncDirectiveLooseRe.MatchString(s)
+}
+
+// syncListMarkerRe は箇条書き・番号付きの項目の頭（- * + 1. 1)）。
+var syncListMarkerRe = regexp.MustCompile(`^\s*(?:[-*+]|[0-9]+[.)])\s+`)
+
+// looksLikeSkipDirective は、厳密な形でなくても skip の指定を意図したと読める行か（本文のコメントの崩れの検出に使う）。
+// 箇条書きの項目は、中身がコメント（<! / &lt;!）で始まるときだけ見る（「- esa-sync: skip」は使い方の説明として止めない。
+// 「1. <!-- esa-sync: skip -->」はコメントを書いたつもりの崩れとして止める。issue 015 の red team）。
+func looksLikeSkipDirective(line string) bool {
+	s := normalizeSyncLine(line)
+	if loc := syncListMarkerRe.FindStringIndex(s); loc != nil {
+		s = s[loc[1]:]
+		if !strings.HasPrefix(s, "<!") && !strings.HasPrefix(s, "&lt;!") {
+			return false
+		}
+	}
+	return syncSkipLooseRe.MatchString(s)
+}
+
+// syncFenceRe はコードブロックのフェンスの行（CommonMark: 字下げは 3 文字まで、` か ~ を 3 つ以上）。
+var syncFenceRe = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
+
+// syncStraySkipLine は、最後の行（except）以外で、厳密な形の skip のコメントだけの行を探す（コードブロックの中は除く）。無ければ -1。
+//
+// フェンスは CommonMark と同じく、開いた記号と同じ種類で同じ長さ以上の、後ろに何も無い行だけを閉じとみなす
+// （行ごとに反転すると、入れ子のコード例 ````md の中の ``` で外に出たと数え、コード例の skip で記事を止める。issue 015 の red team 2 周目）。
+func syncStraySkipLine(lines []string, except int) int {
+	var open string // 開いているフェンスの記号の並び（空なら外）
+	for k, l := range lines {
+		if m := syncFenceRe.FindStringSubmatch(l); m != nil {
+			switch {
+			case open == "":
+				if !(m[1][0] == '`' && strings.Contains(m[2], "`")) { // info に ` を含む行はフェンスでない
+					open = m[1]
+				}
+			case m[1][0] == open[0] && len(m[1]) >= len(open) && strings.TrimSpace(m[2]) == "":
+				open = ""
+			}
+			continue
+		}
+		if open != "" || k == except {
+			continue
+		}
+		if m := syncDirectiveRe.FindStringSubmatch(l); m != nil && m[1] == syncSkipSpec {
+			return k
+		}
+	}
+	return -1
+}
+
+// syncSkipIntentRe は「esa〜sync の直後に、記号と空白だけを挟んで skip の語」がある行（normalizeSyncLine の後に当てる）。結果の側の注意（syncSkipIntentWarning）に使う。
+// 間に語を挟ませないのは、「esa sync の実行で skip された記事は…」のような説明の文に注意を出さないため（red team 2 周目）。
+// コロンは必須にしない（コロンの抜けた <!-- esa-sync skip --> や esa-sync=skip も拾う。red team 3 周目）。
+var syncSkipIntentRe = regexp.MustCompile("(^|[^a-z0-9])esa[\\s\\-_.\\x{2010}-\\x{2015}\\x{2212}\\x{30fc}\\x{301c}~\\\\]*sync[\\s`*_\\\\\"'=:\\x{2236}]+skip($|[^a-z0-9])")
+
+// syncCommentRe は本文の HTML のコメント（複数行を含む）。
+var syncCommentRe = regexp.MustCompile(`(?s)<!--.*?-->`)
+
+// syncSkipIntentWarning は、書き出す記事の本文に skip の指定らしい行があるときの注意を返す（無ければ空）。
+//
+// 🚨 崩れた skip の字面の検出は、塞ぐたびに別の崩し方が出た（issue 015 の red team: 1 行にまとめた metadata・本文の途中・
+// 番号付きの項目）。字面では閉じないので、最後の砦は結果の側に置く: 書き出す記事で、本文のどこかに「esa〜sync … skip」の行があれば、
+// dry-run と --apply の出力に毎回注意を出す（エラーにはしない。skip の使い方を説明する記事も書き出せるように）。
+func syncSkipIntentWarning(body string) string {
+	// 複数行に分けたコメント（<!-- esa-sync:\nskip -->）も 1 行につないで見る（red team 2 周目。010 から字面では検出しない形）
+	lines := strings.Split(body, "\n")
+	for _, c := range syncCommentRe.FindAllString(body, -1) {
+		if strings.Contains(c, "\n") {
+			lines = append(lines, strings.ReplaceAll(c, "\n", " "))
+		}
+	}
+	for _, l := range lines {
+		if syncSkipIntentRe.MatchString(normalizeSyncLine(l)) {
+			return fmt.Sprintf("本文に書き出さない指定らしい行 %q がありますが、指定として効いていないため書き出します"+
+				"（書き出さないなら、本文の最後の行を <!-- esa-sync: %[2]s --> だけにするか、front matter の metadata に esa-sync: %[2]s を書いてください）",
+				visible(l), syncSkipSpec)
+		}
+	}
+	return ""
+}
+
+// looksLikeSyncDirective は、厳密な形でなくても書き出し先の指定を意図したと読める行か。
+func looksLikeSyncDirective(line string) bool {
+	return syncDirectiveLooseRe.MatchString(normalizeSyncLine(line)) || looksLikeSkipDirective(line)
 }
 
 // normalizeSyncBody は本文の改行を LF にそろえ、空でなければ末尾を改行で終える。

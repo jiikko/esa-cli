@@ -138,7 +138,7 @@ func runSync(t *testing.T, srv *httptest.Server, tg syncTarget, apply bool) (int
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	}
 	var out strings.Builder
-	plan, err := runSyncTarget(testClient(srv.URL), tg, apply, &out)
+	plan, err := runSyncTarget(testClient(srv.URL), tg, apply, &out, syncPalette{})
 	return plan.pending(), out.String(), err
 }
 

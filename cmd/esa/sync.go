@@ -64,6 +64,8 @@ const syncHelp = `esa sync - esa のカテゴリ配下の記事を、ローカ�
   - 大文字小文字・Unicode の正規化だけが違う 2 記事（Foo と foo 等）は同じファイルとみなしてエラーにする
     （macOS の既定のファイルシステムでは同じファイルになるため）
   - 差分の表示では制御文字を \x{1b} のようにエスケープする（端末の表示で本文を隠せないように）
+  - 差分は端末へ出すときだけ色を付ける（削除は赤・追加は緑・hunk の見出しは水色）。パイプ・ファイルへ出すときと、
+    環境変数 NO_COLOR を設定したとき・TERM=dumb のときは付けない
 
 設定ファイル: $XDG_CONFIG_HOME/esa-cli/config.yml（未設定なら ~/.config/esa-cli/config.yml）の sync:
   （profile / team と同じファイル。v0.1.8 までの sync.yml は読まない。残っていればエラーで移し方を案内する）
@@ -122,10 +124,11 @@ func cmdSync(args []string) error {
 		return err
 	}
 
+	out, pal := syncStdout()
 	var failed []string
 	pending := 0
 	for _, t := range selected {
-		plan, err := runSyncTarget(c, t, apply, os.Stdout)
+		plan, err := runSyncTarget(c, t, apply, out, pal)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "エラー: [%s] %v\n", t.Name, err)
 			failed = append(failed, t.Name)
@@ -257,7 +260,7 @@ func (p syncPlan) pending() int {
 //
 // 🚨 一覧・取得・対応付け・書き出し先の検査を全部終えてから書き始める。途中で 1 件でも問題があれば
 // 1 件も書かない（esa の一覧を半分だけ反映した状態を作らない）。
-func runSyncTarget(c *client, t syncTarget, apply bool, w io.Writer) (syncPlan, error) {
+func runSyncTarget(c *client, t syncTarget, apply bool, w io.Writer, pal syncPalette) (syncPlan, error) {
 	dir, err := expandDir(t.Dir)
 	if err != nil {
 		return syncPlan{}, err
@@ -298,7 +301,7 @@ func runSyncTarget(c *client, t syncTarget, apply bool, w io.Writer) (syncPlan, 
 		return syncPlan{}, err
 	}
 	plan.skipped = skipped
-	printSyncPlan(w, plan, apply)
+	printSyncPlan(w, plan, apply, pal)
 	if !apply {
 		return plan, nil
 	}
@@ -349,7 +352,7 @@ func planSync(root *os.Root, files []syncFile) (syncPlan, error) {
 }
 
 // printSyncPlan は計画（新規の本文・変更の差分・件数・残骸）を表示する。
-func printSyncPlan(w io.Writer, plan syncPlan, apply bool) {
+func printSyncPlan(w io.Writer, plan syncPlan, apply bool, pal syncPalette) {
 	var nNew, nChanged, nSame int
 	for _, it := range plan.items {
 		src := fmt.Sprintf("esa #%d", it.f.number)
@@ -364,27 +367,27 @@ func printSyncPlan(w io.Writer, plan syncPlan, apply bool) {
 		switch it.status {
 		case syncNew:
 			nNew++
-			fmt.Fprintf(w, "  + %s  新規 %s\n", rel, src)
+			fmt.Fprintf(w, "  %s  新規 %s\n", pal.paint(sgrBold+sgrGreen, "+ "+rel), src)
 			// 新規も本文を差分として出す（出さないと、新しく足された記事の中身を dry-run で確認できない）
 			diff = newFileSummary(it.f.body, src)
 		case syncChanged:
 			nChanged++
-			fmt.Fprintf(w, "  ~ %s  変更 %s\n", rel, src)
+			fmt.Fprintf(w, "  %s  変更 %s\n", pal.paint(sgrBold+sgrYellow, "~ "+rel), src)
 			diff = unifiedDiff(it.old, it.f.body, "ローカル "+rel, src, 3)
 		default:
 			nSame++
 		}
-		for _, line := range splitLines(diff) {
-			fmt.Fprintf(w, "    %s\n", visible(line))
+		for i, line := range splitLines(diff) {
+			fmt.Fprintf(w, "    %s\n", pal.diffLine(i, visible(line)))
 		}
 		// 変更なしの記事にも出す（書き損じのまま一度書き出した後も、気づけるように）
 		for _, warn := range it.f.warns {
-			fmt.Fprintf(w, "  注意: %s（esa #%d）: %s\n", rel, it.f.number, warn)
+			fmt.Fprintf(w, "  %s %s（esa #%d）: %s\n", pal.paint(sgrYellow, "注意:"), rel, it.f.number, warn)
 		}
 	}
 	// 🚨 書き出さない記事も必ず出す（黙って飛ばすと、指定が効いたのか記事が一覧に無いのかを見分けられない）
 	for _, sk := range plan.skipped {
-		fmt.Fprintf(w, "  - %s  書き出さない esa #%d（書き出し先の指定 esa-sync: %s）\n", visible(sk.category+"/"+sk.name), sk.number, syncSkipSpec)
+		fmt.Fprintf(w, "  %s\n", pal.paint(sgrDim, fmt.Sprintf("- %s  書き出さない esa #%d（書き出し先の指定 esa-sync: %s）", visible(sk.category+"/"+sk.name), sk.number, syncSkipSpec)))
 	}
 	summary := fmt.Sprintf("  記事 %d 件: 新規 %d / 変更 %d / 変更なし %d", len(plan.items), nNew, nChanged, nSame)
 	if len(plan.skipped) > 0 {
@@ -392,8 +395,8 @@ func printSyncPlan(w io.Writer, plan syncPlan, apply bool) {
 	}
 	fmt.Fprintln(w, summary)
 	if !apply && len(plan.leftovers) > 0 {
-		fmt.Fprintf(w, "  注意: 前回中断したとき（か、いま別の --apply が書いている）一時ファイルが %d 件あります（--apply で消します）: %s\n",
-			len(plan.leftovers), visible(strings.Join(plan.leftovers, ", ")))
+		fmt.Fprintf(w, "  %s 前回中断したとき（か、いま別の --apply が書いている）一時ファイルが %d 件あります（--apply で消します）: %s\n",
+			pal.paint(sgrYellow, "注意:"), len(plan.leftovers), visible(strings.Join(plan.leftovers, ", ")))
 	}
 }
 

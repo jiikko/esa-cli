@@ -131,7 +131,7 @@ esa search -json 'in:設計' | jq -r '.[].number'                  # JSON で受
 | カラム | 内容 |
 |---|---|
 | `number` | 記事番号 |
-| `name` | カテゴリ/タイトル（full_name） |
+| `name` / `full_name` | カテゴリ/タイトル（full_name） |
 | `title` | タイトルのみ |
 | `category` | カテゴリ |
 | `url` | URL |
@@ -157,7 +157,8 @@ esa search -json 'in:設計' | jq -r '.[].number'                  # JSON で受
 | `-json` | — | off | JSON で出力（search / meta / revisions。show は常に Markdown） |
 
 search 専用: `-c` / `-columns`、`-no-header`、`-fast`、`-n <数>`、`-page <数>`。
-meta 専用: `-comments`、`-copy`。
+meta 専用: `-comments`、`-copy`、`-copy-title`。
+sync 専用: `--apply`。sync add 専用: `-category`、`-dir`、`-name`（プロンプトの既定値になる。非対話ならそのまま採用）。
 
 フラグは `show` / `meta` / `revisions` では番号の前後どちらに書いてもよい（`search` はクエリより前に置く）。
 

@@ -20,6 +20,12 @@
    - 同じ前提検査（baseline・当たったか・構文・狙った FAIL）を持つ使い捨てのハーネスを手で組み直した
    - 切り出し先の提案: dotfiles に新規 issue（他の repo でも使えるようにする）
 
+## 決着（2026-11-01）
+
+- 項目 1: 採用。017 の項目 1 と同じ件なので 1 本にまとめ、dotfiles の `_claude/rules/verify-execution-not-just-exit-code.md` の toolchain の節に追記した（dotfiles commit「rules: esa-cli retro 007 / 017 の提案を追記する」）
+- 項目 2: 却下（既存の規則で吸収済み）。`measure-external-cli-streams-separately.md` の「外部の道具の意味論を自分で書き直すなら、本物を oracle にして差分の検査を作る」と、`~/.claude/CLAUDE.md` の「在るローカルのファイルどうしは実体 (`(dev, ino)`) で比べる」が同じ一般形を持つ
+- 項目 3: 解消済み。dotfiles issue 585（mutate-verify が dotfiles の外で動かない）が done で、`mutate-verify` はどの repo からも呼べる
+
 ## 残課題
 
-- 上の 3 項目の切り出し（ユーザーの判断待ち）
+- なし

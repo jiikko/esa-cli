@@ -24,6 +24,11 @@
   チェックリスト（`rules-checklists/`）の「到達しているか」へ 1 行の追記を提案。
 - 項目 3: 却下（その CLI の使い方の取り違えで、エラーが即座に出た。一般化する価値なし）。
 
+## 決着（2026-11-01）
+
+- 項目 1: 採用。dotfiles の `_claude/rules/verify-execution-not-just-exit-code.md` の toolchain の節に追記した（007 の項目 1 と統合。dotfiles commit「rules: esa-cli retro 007 / 017 の提案を追記する」）
+- 項目 2: 採用。dotfiles の `_claude/rules-checklists/mutation-verify-new-tests.md` の「到達しているか」に追記した（同じ commit）
+
 ## 残課題
 
-- 項目 1・2 の切り出しはユーザーの判断待ち。
+- なし

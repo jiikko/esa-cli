@@ -450,3 +450,51 @@ func TestPermissionDeniedProfileIsSkippedAndHinted(t *testing.T) {
 		}
 	})
 }
+
+// 他サイトのセッション Cookie を復号しない: extractCookies は esa の送信先（teamHost）に送られうる
+// host_key の行だけを読む。除外される行も正しい鍵で暗号化してあるので、絞らなければ結果に現れる。
+func TestExtractCookiesReadsOnlyTeamHostCookies(t *testing.T) {
+	home := fakeChrome(t, nil)
+	enc := func(plain, host string) []byte {
+		return chromecookietest.Encrypt(t, fakeKeychainPassword, plain, host)
+	}
+	chromecookietest.WriteCookieDB(t, home, "P", "24", []fakeCookie{
+		{Host: ".esa.io", Name: "_session", Enc: enc("S", ".esa.io")},
+		{Host: "other.esa.io", Name: "other_team", Enc: enc("O", "other.esa.io")},
+		{Host: "notesa.io", Name: "lookalike", Enc: enc("N", "notesa.io")},
+		{Host: ".slack.com", Name: "d", Enc: enc("SLACK", ".slack.com")},
+	})
+	res, err := extractCookies("P", "t.esa.io")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Cookies) != 1 || res.Cookies[0].Host != ".esa.io" || res.Cookies[0].Name != "_session" {
+		t.Errorf("esa 宛ての Cookie だけを返すべき: %+v", res.Cookies)
+	}
+}
+
+// buildClientForProfile が extractCookies へ teamHost を渡していること。他サイトの行しか無く、それが鍵違いでも、
+// 読まないので「復号失敗」ではなく「esa 宛ての Cookie が無い」（黙って skip）になる。
+func TestBuildClientDoesNotDecryptOtherSitesCookies(t *testing.T) {
+	home := fakeChrome(t, nil)
+	chromecookietest.WriteCookieDB(t, home, "P", "24", []fakeCookie{
+		{Host: ".slack.com", Name: "d", Enc: chromecookietest.Encrypt(t, "wrongpassword", "x", ".slack.com")},
+	})
+	_, err := buildClientForProfile(config{team: "t"}, "P")
+	if !isProfileSkip(err) || brokenSkip(err) || strings.Contains(err.Error(), "復号") {
+		t.Errorf("他サイトの行を復号しようとした（Cookie が無いことの skip になるべき）: %T %v", err, err)
+	}
+}
+
+// buildClientForProfile が送信先として teamHost（<team>.esa.io）を渡していること。host-only の
+// t.esa.io の Cookie は、送信先を esa.io や別のサブドメインと取り違えると読まれず skip になる。
+func TestBuildClientReadsTeamHostOnlyCookie(t *testing.T) {
+	home := fakeChrome(t, nil)
+	chromecookietest.WriteCookieDB(t, home, "P", "24", []fakeCookie{
+		{Host: "t.esa.io", Name: "_session", Enc: chromecookietest.Encrypt(t, fakeKeychainPassword, "S", "t.esa.io")},
+	})
+	c, err := buildClientForProfile(config{team: "t"}, "P")
+	if err != nil || !strings.Contains(c.cookieHeader, "_session=S") {
+		t.Errorf("t.esa.io の host-only Cookie を読めない: err=%v", err)
+	}
+}

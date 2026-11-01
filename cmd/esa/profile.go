@@ -20,7 +20,7 @@ const profileAuto = "auto"
 //
 //   - broken=false: Cookie DB が無い / esa 宛ての Cookie が 0 件（ふつうの状態。黙って飛ばす）
 //   - broken=true: このプロファイル固有の失敗（壊れた DB・sqlite 以外のファイル・古いスキーマ・
-//     全件の復号失敗・Cookie DB / -wal / -shm を stat・読み取りできない）。飛ばすが理由を記録し、
+//     esa 宛ての行の全件の復号失敗・Cookie DB / -wal / -shm を stat・読み取りできない）。飛ばすが理由を記録し、
 //     最終的に見つからなかったときのエラー文に添える。権限（EACCES / EPERM）なら perm も立て、
 //     フルディスクアクセスとパーミッションの両方を確認する案内を添える
 //
@@ -83,13 +83,13 @@ const permissionHint = "\n  アクセス拒否で読めないプロファイル�
 // buildClientForProfile は指定プロファイルの Cookie でクライアントを構築する。
 // esa 宛て Cookie が無い場合は *profileSkipError（自動検出時は次の候補へ進むために使う）。
 func buildClientForProfile(cfg config, profile string) (*client, error) {
-	res, err := extractCookies(profile)
+	res, err := extractCookies(profile, cfg.teamHost())
 	if err != nil {
 		return nil, err
 	}
 	header, n := buildCookieHeader(res.Cookies, cfg.teamHost())
 	if n == 0 {
-		// 🚨 「Cookie が無い」に化けさせない: 全件の復号失敗（鍵違い）・-wal を読めない、は理由を記録して skip。
+		// 🚨 「Cookie が無い」に化けさせない: esa 宛ての行の全件の復号失敗（鍵違い）・-wal を読めない、は理由を記録して skip。
 		if derr := res.Diagnose(fmt.Sprintf("%s 宛ての Cookie ", cfg.teamHost())); derr != nil {
 			return nil, classifyReadError(profile, derr)
 		}

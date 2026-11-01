@@ -22,7 +22,8 @@ chromecookie の読み取りを送信先ホストで絞り（esa-cli / slack-cli
 
 - **A. 別の repo・利用者が取り込む成果物（ライブラリ・パッケージ・設定のテンプレート）を変えたら、配る前に、受け手の環境（取り込む側の repo・空の環境）で依存の解決と検査を 1 回回す**。作る側の repo の中では、ローカルの上書き（Go の replace・workspace・ローカルのキャッシュ・相対パスの参照）が受け手との違いを埋めるので、作る側の検査は全部緑のまま通る（今回は取り込む側の `go mod tidy` だけが落ちた）。
   - 切り出し先: `_claude/rules/verify-execution-not-just-exit-code.md` の「隔離環境での成功は、本番での成功ではない」節への 1 項の追記。新しい rule にはしない（発動点は「作ったものを別の場所で使う」で、同じ節が扱っている）。
-  - 判断: ユーザー待ち。
+  - 判断: 採用 (2026-11-01)。dotfiles の commit「docs(rules): 取り込まれるものを変えたら、受け手の環境で依存の解決と検査を回す (esa-cli retro 018)」で、
+    `_claude/rules/verify-execution-not-just-exit-code.md` の該当節に 1 項を足し、実例を同名の rules-rationale へ置いた。
 
 ## 却下
 
@@ -32,4 +33,5 @@ chromecookie の読み取りを送信先ホストで絞り（esa-cli / slack-cli
 
 ## 進捗
 
-- [ ] A の切り出し（ユーザーの判断待ち）
+- [x] A の切り出し（上記の commit。make test-lint rc=0、常時読み込みの指示ファイルの合計 108,628 字で上限 150,000 の内）
+- 残課題なし（提案は A を採用、4 と 1・2 は却下に理由つきで記録）
